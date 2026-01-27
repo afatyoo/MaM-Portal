@@ -1,10 +1,11 @@
 = MaM (Multi Access Mail) Portal (Zimbra / Carbonio)
-:toc:
-:toclevels: 3
 :sectnums:
 
 A lightweight portal to authenticate users against *Zimbra / Carbonio* (via SOAP) and redirect them to webmail using *Preauth*.
 Includes a built-in *Admin Dashboard* to manage servers and admin users.
+
+[.text-center]
+image::MaM-Portal.png[]
 
 == Features
 
