@@ -749,7 +749,7 @@
         `);
 
         setTimeout(() => {
-          window.location.href = data.redirectUrl;
+            window.location.replace(data.handoffUrl);
         }, 1000);
 
       } catch (error) {

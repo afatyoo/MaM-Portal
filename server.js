@@ -231,6 +231,17 @@ app.use(express.urlencoded({ extended: true }));
 const FileStore = FileStoreFactory(session);
 const cfg0 = loadConfig();
 
+
+const HANDOFF_TTL_MS = Number(process.env.HANDOFF_TTL_MS || 60_000);
+const HANDOFF_STORE = new Map(); // token -> { actionUrl, fields, expiresAt }
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of HANDOFF_STORE.entries()) {
+    if (!v || v.expiresAt <= now) HANDOFF_STORE.delete(k);
+  }
+}, 30_000).unref?.();
+
 app.use(session({
   store: new FileStore({ path: path.join(DATA_DIR, "sessions") }),
   secret: cfg0.adminSessionSecret,
@@ -320,16 +331,21 @@ app.post("/api/login", async (req,res)=>{
         const by="name";
         const preauth = computePreauth({account:email,by,expires,timestamp:ts}, s.preauthkey);
 
-        const redirectUrl =
-          `${s.server}${s.preauthPath}` +
-          `?account=${encodeURIComponent(email)}` +
-          `&by=${encodeURIComponent(by)}` +
-          `&expires=${encodeURIComponent(expires)}` +
-          `&timestamp=${encodeURIComponent(ts)}` +
-          `&preauth=${encodeURIComponent(preauth)}`;
+        // Jangan pernah kirim preauth ke frontend. Kita simpan di server sebagai handoff token (1x pakai),
+        // lalu frontend hanya diarahkan ke /handoff/<token>.
+        const actionUrl = `${s.server}${s.preauthPath}`;
+        const token = crypto.randomBytes(24).toString("hex");
+
+        HANDOFF_STORE.set(token, {
+          actionUrl,
+          fields: { account: email, by, expires, timestamp: ts, preauth },
+          expiresAt: Date.now() + HANDOFF_TTL_MS,
+        });
+
+        const handoffUrl = `/handoff/${token}`;
 
         logOk({ email, domain, server_key: s.key, attempted });
-        return res.json({redirectUrl, server:s.key});
+        return res.json({ handoffUrl, server: s.key });
       }
     }
 
@@ -342,6 +358,34 @@ app.post("/api/login", async (req,res)=>{
     return res.status(500).json({error:"Internal error"});
   }
 });
+
+// Handoff: render halaman HTML yang auto-submit POST ke /service/preauth
+// Ini memastikan preauth tidak muncul di URL querystring dan tidak terkirim ke frontend.
+app.get("/handoff/:token", (req, res) => {
+  const token = String(req.params.token || "").trim();
+  const entry = HANDOFF_STORE.get(token);
+
+  if (!entry || !entry.fields || !entry.actionUrl || entry.expiresAt <= Date.now()) {
+    if (token) HANDOFF_STORE.delete(token);
+    return res.status(410).send("Handoff expired. Please login again.");
+  }
+
+  HANDOFF_STORE.delete(token); // one-time use
+
+  const { actionUrl, fields } = entry;
+
+  // Build GET URL for Zimbra preauth (Zimbra lu ga support POST)
+  const qs = new URLSearchParams();
+  for (const [k, v] of Object.entries(fields)) qs.set(k, String(v));
+
+  // prevent caching + referrer leakage from portal side
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("Referrer-Policy", "no-referrer");
+
+  return res.redirect(302, `${actionUrl}?${qs.toString()}`);
+});
+
 
 app.delete("/api/admin/users/:username", requireAdmin, (req,res)=>{
   const target = String(req.params.username || "").trim();
