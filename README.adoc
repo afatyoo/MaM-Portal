@@ -50,7 +50,7 @@ npm install
 cp config.sample.ini config.ini
 ----
 
-Edit `config.ini` and define at least one server section (`[ZetaKey_1]`).
+Edit `config.ini` and define at least one server section (`[MaMKey_1]`).
 
 === 3) Start the server
 [source,bash]
@@ -94,7 +94,7 @@ tls_cert_file = certs/server.crt
 base_path = /admin
 session_secret = CHANGE_ME_SESSION_SECRET
 
-[ZetaKey_1]
+[MaMKey_1]
 name = Zimbra / Carbonio Primary
 server = https://mail1.example.com
 domains = example.com,example.co.id
@@ -106,7 +106,7 @@ preauth_path = /service/preauth
 ----
 
 === Notes
-* Server keys must follow: `ZetaKey_<number>` (e.g. `ZetaKey_1`, `ZetaKey_2`)
+* Server keys must follow: `MaMKey_<number>` (e.g. `MaMKey_1`, `MaMKey_2`)
 * `domains` is a comma-separated list.
 * You can use `*` as a wildcard fallback domain.
 * `default_domain` will be appended if user logs in using username only (no `@domain`).
