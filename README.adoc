@@ -1,8 +1,8 @@
 = MaM (Multi Access Mail) Portal (Zimbra / Carbonio)
 :sectnums:
 
-A lightweight portal to authenticate users against *Zimbra / Carbonio* (via SOAP) and redirect them to webmail using *Preauth*.
-Includes a built-in *Admin Dashboard* to manage servers and admin users.
+A lightweight portal to authenticate users against *Zimbra / Carbonio* using *SOAP* and redirect them to webmail with *Preauth*.
+It also includes a built-in *Admin Dashboard* to manage servers, domains, and admin users.
 
 [.text-center]
 image::MaM-Portal.png[]
@@ -10,33 +10,55 @@ image::MaM-Portal.png[]
 == Features
 
 === User Portal
-* Login with *email/username + password*
+* Login using *email/username + password*
 * Domain-based routing to the correct *Zimbra / Carbonio* server
-* Webmail redirect using *Preauth* (no need to type password again in webmail)
-* Supports *multiple servers* + fallback order
+* Seamless webmail redirect using *Preauth*
+* Supports *multiple servers* with fallback order
 
 === Admin Dashboard
-* Manage Zimbra / Carbonio servers (add/edit/delete)
-* Domain mapping per server
-* Test connection (SOAP auth check)
-* Manage admin users (passwords stored as bcrypt hashes)
+* Manage Zimbra / Carbonio servers
+* Map domains to each server
+* Test SOAP authentication connectivity
+* Manage admin users
+* Passwords stored as *bcrypt hashes*
 * Session-based admin login
 
-=== Ops / Security
-* Config stored in `config.ini` (not committed)
-* Optional TLS for the portal itself (HTTPS mode)
-* Optional custom CA file for Zimbra internal certificates
+=== Operations / Security
+* Configuration stored in `config.ini`
+* Optional TLS / HTTPS support
+* Optional custom CA file for internal certificates
 * Login attempts logged to `data/login_attempts.jsonl`
-* File-based session store in `data/sessions/`
+* File-based admin session storage in `data/sessions/`
+* Helper script `start.sh` for bootstrap, start, stop, restart, and status
 
 == Requirements
 * Node.js *18+* (LTS recommended)
 * npm
 * Zimbra / Carbonio server with:
-** SOAP endpoint reachable
-** Preauth enabled + Preauth key available
+** Reachable SOAP endpoint
+** Preauth enabled
+** Valid Preauth key
 
-== Quick Start (Local)
+== Project Structure
+
+[source,text]
+----
+.
+├── config.sample.ini
+├── config.ini
+├── package.json
+├── server.js
+├── public/
+├── data/
+│   ├── admin_users.json
+│   ├── login_attempts.jsonl
+│   └── sessions/
+├── logs/
+├── start.sh
+└── certs/
+----
+
+== Quick Start
 
 === 1) Install dependencies
 [source,bash]
@@ -44,15 +66,21 @@ image::MaM-Portal.png[]
 npm install
 ----
 
-=== 2) Create config.ini
+=== 2) Create configuration
 [source,bash]
 ----
 cp config.sample.ini config.ini
 ----
 
-Edit `config.ini` and define at least one server section (`[MaMKey_1]`).
+Edit `config.ini` and define at least one server section such as `[MaMKey_1]`.
 
-=== 3) Start the server
+=== 3) Create admin account
+[source,bash]
+----
+npm run create-admin
+----
+
+=== 4) Start the application
 [source,bash]
 ----
 npm run start
@@ -62,20 +90,95 @@ Open:
 * User portal: `http://localhost:8080/`
 * Admin dashboard: `http://localhost:8080/admin/`
 
-== Admin Account
+== Start Script Helper
 
-Create an admin user:
+The project includes a helper script named `start.sh` to simplify installation, bootstrap, and runtime operations.
+
+=== What `start.sh` does
+On first run, it can:
+* Detect the operating system
+* Install Node.js and npm if missing
+* Run `npm install`
+* Run `npm run build`
+* Run `npm run create-admin`
+* Start the application
+
+On later runs, it will:
+* Start the application directly without re-running install/build/admin creation
+* Only re-run bootstrap if explicitly requested
+
+=== Default admin credentials
+By default, the helper script creates:
+* Username: `admin`
+* Password: `admin`
+
+You should change this immediately after first use in a real environment.
+
+=== Make script executable
 [source,bash]
 ----
-npm run create-admin
+chmod +x start.sh
 ----
+
+=== Basic usage
+[source,bash]
+----
+./start.sh
+./start.sh start
+./start.sh stop
+./start.sh restart
+./start.sh status
+./start.sh help
+----
+
+=== Run modes
+[source,bash]
+----
+./start.sh start --background
+./start.sh start --foreground
+----
+
+=== Manual bootstrap
+Use this when you want to force dependency installation and rebuild manually:
+
+[source,bash]
+----
+./start.sh bootstrap
+----
+
+=== Force bootstrap before start
+[source,bash]
+----
+./start.sh start --force-bootstrap
+----
+
+=== Logs
+* Application log: `logs/app.log`
+* Bootstrap log: `logs/bootstrap.log`
+
+=== PID file
+* Application PID file: `app.pid`
+
+=== Bootstrap state
+The script uses a bootstrap marker file:
+* `.bootstrap.done`
+
+This prevents `npm install` and `npm run build` from running every time after a simple stop/start cycle.
+
+If you want to reset bootstrap state manually:
+[source,bash]
+----
+rm -f .bootstrap.done
+----
+
+== Admin Account
 
 Admin users are stored in:
 * `data/admin_users.json`
 
-TIP: Use a strong password and keep `data/` out of Git.
+TIP: Use a strong password and make sure `data/` is not committed to Git.
 
-== Configuration Guide (config.ini)
+== Configuration Guide (`config.ini`)
 
 === Minimal example
 [source,ini]
@@ -106,64 +209,131 @@ preauth_path = /service/preauth
 ----
 
 === Notes
-* Server keys must follow: `MaMKey_<number>` (e.g. `MaMKey_1`, `MaMKey_2`)
-* `domains` is a comma-separated list.
-* You can use `*` as a wildcard fallback domain.
-* `default_domain` will be appended if user logs in using username only (no `@domain`).
+* Server sections must use the format: `MaMKey_<number>`
+* Example: `MaMKey_1`, `MaMKey_2`
+* `domains` must be a comma-separated list
+* You can use `*` as a wildcard fallback domain
+* `default_domain` will be appended if a user logs in with username only
 
 === Carbonio compatibility
-Carbonio can work the same way as Zimbra as long as the SOAP and preauth endpoints are compatible.
-If your Carbonio endpoints differ, adjust:
+Carbonio generally works the same as Zimbra as long as SOAP and Preauth endpoints are compatible.
+
+If needed, adjust:
 * `soap_path`
 * `preauth_path`
 
-== Admin UI Development (Optional)
+== Admin UI Development
 
-Run backend + admin UI dev server:
+Run backend and admin UI separately in development mode:
+
 [source,bash]
 ----
-npm run dev:backend   # Express backend on :8080
-npm run dev           # Vite admin UI on :5173
+npm run dev:backend
+npm run dev
 ----
 
-Admin UI:
-* `http://localhost:5173/admin/`
+Default URLs:
+* Backend: `http://localhost:8080/`
+* Admin UI (Vite): `http://localhost:5173/admin/`
 
-Or run both:
+Or run both together:
 [source,bash]
 ----
 npm run dev:all
 ----
 
-Build admin UI into `public/admin/`:
+Build the admin UI into `public/admin/`:
 [source,bash]
 ----
 npm run build
 ----
 
 == Production Notes
-* Put the portal behind a reverse proxy (Nginx/Caddy) if needed.
-* Always set a strong `session_secret` in `[ADMIN]`.
-* Do not commit:
+* Place the portal behind a reverse proxy such as *Nginx* or *Caddy*
+* Always set a strong `session_secret` in `[ADMIN]`
+* Do not commit the following:
 ** `config.ini`
 ** `data/`
 ** `certs/`
+** `logs/`
+** `.bootstrap.done`
+** `app.pid`
+
+=== Recommended reverse proxy setup
+In production, it is recommended to:
+* Terminate HTTPS at Nginx or Caddy
+* Forward traffic to the Node.js app running on the configured HTTP port
+* Restrict admin access if necessary
 
 == Troubleshooting
 
+=== The application starts but stop does not fully kill it
+If the Node process becomes detached from `npm`, use:
+[source,bash]
+----
+./start.sh stop
+----
+
+The helper script will also try to detect and stop orphan processes using the configured app match pattern.
+
+If needed, adjust:
+[source,bash]
+----
+APP_MATCH="node server.js" ./start.sh status
+APP_MATCH="node dist/server.js" ./start.sh stop
+----
+
 === Login succeeds but redirect fails
 * Verify `preauthkey` is correct
-* Ensure server time is synced (NTP) on both portal and Zimbra/Carbonio
-* Confirm `preauth_path` matches your server
+* Ensure server time is synchronized with NTP
+* Confirm `preauth_path` matches the actual server endpoint
 
-=== SOAP auth fails
-* Confirm `soap_path` is correct (`/service/soap` is common)
-* If using internal/self-signed cert:
+=== SOAP authentication fails
+* Confirm `soap_path` is correct
+* If using self-signed or internal certificates:
 ** set `ca_file = certs/internal-ca.pem`
-** or (dev only) set `insecure_tls = true`
+** or for development only set `insecure_tls = true`
 
-=== Domain routing not working
-* Make sure domain is listed in `domains` (lowercase recommended)
-* Add `domains = *` on your fallback server to catch unmatched domains
+=== Domain routing is not working
+* Ensure the domain is listed in `domains`
+* Lowercase domain values are recommended
+* Add `domains = *` to the fallback server if needed
 
+=== `start.sh` runs install/build every time
+This usually means bootstrap state is missing.
 
+Check whether `.bootstrap.done` exists:
+[source,bash]
+----
+ls -lah .bootstrap.done
+----
+
+If it does not exist, bootstrap will run again on next start.
+
+=== `create-admin` fails during bootstrap
+This may happen if:
+* the admin user already exists
+* the prompt flow differs from the expected input
+* custom scripts behave differently in your environment
+
+In that case, create or update the admin manually:
+[source,bash]
+----
+npm run create-admin
+----
+
+== Recommended `.gitignore`
+Make sure these entries exist in `.gitignore`:
+
+[source,text]
+----
+config.ini
+data/
+certs/
+logs/
+app.pid
+.bootstrap.done
+----
+
+== License
+Add your project license information here.
