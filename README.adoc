@@ -87,6 +87,7 @@ npm run start
 ----
 
 Open:
+
 * User portal: `http://localhost:8080/`
 * Admin dashboard: `http://localhost:8080/admin/`
 
@@ -96,6 +97,7 @@ The project includes a helper script named `start.sh` to simplify installation, 
 
 === What `start.sh` does
 On first run, it can:
+
 * Detect the operating system
 * Install Node.js and npm if missing
 * Run `npm install`
@@ -104,11 +106,13 @@ On first run, it can:
 * Start the application
 
 On later runs, it will:
+
 * Start the application directly without re-running install/build/admin creation
 * Only re-run bootstrap if explicitly requested
 
 === Default admin credentials
 By default, the helper script creates:
+
 * Username: `admin`
 * Password: `admin`
 
@@ -153,14 +157,17 @@ Use this when you want to force dependency installation and rebuild manually:
 ----
 
 === Logs
+
 * Application log: `logs/app.log`
 * Bootstrap log: `logs/bootstrap.log`
 
 === PID file
+
 * Application PID file: `app.pid`
 
 === Bootstrap state
 The script uses a bootstrap marker file:
+
 * `.bootstrap.done`
 
 This prevents `npm install` and `npm run build` from running every time after a simple stop/start cycle.
@@ -174,6 +181,7 @@ rm -f .bootstrap.done
 == Admin Account
 
 Admin users are stored in:
+
 * `data/admin_users.json`
 
 TIP: Use a strong password and make sure `data/` is not committed to Git.
@@ -209,6 +217,7 @@ preauth_path = /service/preauth
 ----
 
 === Notes
+
 * Server sections must use the format: `MaMKey_<number>`
 * Example: `MaMKey_1`, `MaMKey_2`
 * `domains` must be a comma-separated list
@@ -219,6 +228,7 @@ preauth_path = /service/preauth
 Carbonio generally works the same as Zimbra as long as SOAP and Preauth endpoints are compatible.
 
 If needed, adjust:
+
 * `soap_path`
 * `preauth_path`
 
@@ -233,6 +243,7 @@ npm run dev
 ----
 
 Default URLs:
+
 * Backend: `http://localhost:8080/`
 * Admin UI (Vite): `http://localhost:5173/admin/`
 
@@ -249,6 +260,7 @@ npm run build
 ----
 
 == Production Notes
+
 * Place the portal behind a reverse proxy such as *Nginx* or *Caddy*
 * Always set a strong `session_secret` in `[ADMIN]`
 * Do not commit the following:
@@ -261,6 +273,7 @@ npm run build
 
 === Recommended reverse proxy setup
 In production, it is recommended to:
+
 * Terminate HTTPS at Nginx or Caddy
 * Forward traffic to the Node.js app running on the configured HTTP port
 * Restrict admin access if necessary
@@ -284,17 +297,20 @@ APP_MATCH="node dist/server.js" ./start.sh stop
 ----
 
 === Login succeeds but redirect fails
+
 * Verify `preauthkey` is correct
 * Ensure server time is synchronized with NTP
 * Confirm `preauth_path` matches the actual server endpoint
 
 === SOAP authentication fails
+
 * Confirm `soap_path` is correct
 * If using self-signed or internal certificates:
 ** set `ca_file = certs/internal-ca.pem`
 ** or for development only set `insecure_tls = true`
 
 === Domain routing is not working
+
 * Ensure the domain is listed in `domains`
 * Lowercase domain values are recommended
 * Add `domains = *` to the fallback server if needed
@@ -312,6 +328,7 @@ If it does not exist, bootstrap will run again on next start.
 
 === `create-admin` fails during bootstrap
 This may happen if:
+
 * the admin user already exists
 * the prompt flow differs from the expected input
 * custom scripts behave differently in your environment
@@ -336,4 +353,4 @@ app.pid
 ----
 
 == License
-Add your project license information here.
+See the link:LICENSE[LICENSE] file for details.
