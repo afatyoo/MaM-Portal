@@ -1,6 +1,6 @@
 # Contributing to MaM Portal
 
-Thanks for your interest in contributing to **MaM (Multi Access Mail) Portal**! Whether it's a bug fix, a new feature, or a documentation improvement — all contributions are welcome.
+Thanks for your interest in contributing to **MaM (Multi Access Mail) Portal**! Whether it's a bug fix, a new feature, or a documentation improvement all contributions are welcome.
 
 ---
 
