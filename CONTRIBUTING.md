@@ -123,7 +123,7 @@ git checkout -b feature/my-new-feature
 
 ## Making Changes
 
-- Keep changes **focused and scoped** — one feature or fix per PR
+- Keep changes **focused and scoped** one feature or fix per PR
 - Write **clear commit messages**:
   ```
   fix: handle missing domain in SOAP auth fallback
@@ -196,7 +196,7 @@ Please report security concerns privately by emailing the maintainer directly or
 
 ## What NOT to Commit
 
-Make sure your `.gitignore` covers these — never commit:
+Make sure your `.gitignore` covers these never commit:
 
 ```
 config.ini          # Contains secrets (preauth keys, session secrets)
