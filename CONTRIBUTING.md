@@ -206,7 +206,10 @@ logs/               # Runtime logs
 app.pid
 .bootstrap.done
 ```
+---
+## LICENSE
 
+By contributing to this project, you agree that your contributions will be licensed under the same license as the project.
 ---
 
 ## Thank You
