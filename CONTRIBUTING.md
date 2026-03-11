@@ -139,7 +139,7 @@ git checkout -b feature/my-new-feature
 
 - **JavaScript**: Follow the existing code style. Use `const`/`let`, avoid `var`.
 - **Async**: Prefer `async/await` over raw `.then()` chains.
-- **Security**: Never log passwords, tokens, or preauth keys — even at debug level.
+- **Security**: Never log passwords, tokens, or preauth keys even at debug level.
 - **Config**: All configurable values should go through `config.ini`, not be hardcoded.
 - **Error handling**: Always handle errors gracefully and return meaningful HTTP status codes.
 
