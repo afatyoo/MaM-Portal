@@ -129,6 +129,11 @@ Custom process matcher:
   APP_MATCH="node server.js" ./start.sh
   APP_MATCH="node dist/server.js" ./start.sh
 
+Mail proxy (IMAPS/POP3S/SMTPS, [MAIL] enabled = true in config.ini):
+  Ports 993/995/465 are privileged. Run as root, or give node the capability:
+    sudo setcap 'cap_net_bind_service=+ep' "$(readlink -f "$(command -v node)")"
+  See docs/mail-proxy.md
+
 Useful commands:
   tail -f logs/app.log
   tail -f logs/bootstrap.log
@@ -581,8 +586,23 @@ bootstrap() {
   log "Bootstrap completed successfully."
 }
 
+check_mail_ports() {
+  [[ -f config.ini ]] || return 0
+  if awk '/^\[MAIL\]/{f=1;next} /^\[/{f=0} f && /^[[:space:]]*enabled[[:space:]]*=[[:space:]]*true/{found=1} END{exit !found}' config.ini; then
+    if [[ "${EUID}" -ne 0 ]] && [[ "$(uname -s)" == "Linux" ]]; then
+      local node_bin
+      node_bin="$(readlink -f "$(command -v node)" 2>/dev/null || true)"
+      if [[ -n "${node_bin}" ]] && ! getcap "${node_bin}" 2>/dev/null | grep -q cap_net_bind_service; then
+        warn "Mail proxy is enabled but node cannot bind ports below 1024."
+        warn "Run: sudo setcap 'cap_net_bind_service=+ep' ${node_bin}  (or use ports >= 1024)"
+      fi
+    fi
+  fi
+}
+
 start_flow() {
   ensure_project_files
+  check_mail_ports
 
   if needs_bootstrap; then
     log "Bootstrap is required. Running bootstrap first..."

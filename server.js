@@ -12,6 +12,8 @@ import { Agent } from "undici";
 import http from "http";
 import https from "https";
 import { fileURLToPath } from "url";
+import { parseMailSection, parseServerMail } from "./mail/common.js";
+import { startMailProxy, mailStatus } from "./mail/index.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -96,11 +98,14 @@ function loadConfig() {
         preauthPath: (s.preauth_path || "/service/preauth").trim(),
         caFile: (s.ca_file || "").trim(),
         insecureTls: String(s.insecure_tls || "false").toLowerCase() === "true",
+        mail: parseServerMail(s, s.server || ""),
       };
     })
     .filter(s => s.server && s.preauthkey && s.domains.length > 0);
 
-  return { defaultDomain, servers, httpsEnabled, httpPort, httpsPort, tlsKeyFile, tlsCertFile, adminSessionSecret, adminBasePath };
+  const mail = parseMailSection(cfg);
+
+  return { defaultDomain, servers, httpsEnabled, httpPort, httpsPort, tlsKeyFile, tlsCertFile, adminSessionSecret, adminBasePath, mail };
 }
 
 function parseDomains(domainsStr) {
@@ -638,6 +643,14 @@ app.get("/api/admin/logs", requireAdmin, (req,res)=>{
   res.json({entries: tailJsonl(LOG_FILE, limit)});
 });
 
+app.get("/api/admin/mail/status", requireAdmin, (req,res)=>{
+  res.json({
+    enabled: mailStatus.enabled,
+    listeners: mailStatus.listeners,
+    connections: typeof mailStatus.connections === "function" ? mailStatus.connections() : 0,
+  });
+});
+
 app.get("/api/admin/users", requireAdmin, (req,res)=>{
   const db = readAdminDb(ADMIN_FILE);
   res.json({users: db.users.map(u=>({username:u.username, created_at:u.created_at}))});
@@ -677,6 +690,18 @@ async function start(){
     https.createServer({key, cert}, app).listen(cfg.httpsPort, ()=>console.log(`MaM Portal (HTTPS) running on https://localhost:${cfg.httpsPort}`));
   } else {
     http.createServer(app).listen(cfg.httpPort, ()=>console.log(`MaM Portal running on http://localhost:${cfg.httpPort}`));
+  }
+
+  try {
+    startMailProxy({
+      getConfig: loadConfig,
+      findCandidates,
+      normalizeEmail,
+      log: (entry) => appendJsonl(LOG_FILE, entry),
+      baseDir: __dirname,
+    });
+  } catch (e) {
+    console.error("[mail] proxy not started:", e.message);
   }
 }
 start().catch((e)=>{
