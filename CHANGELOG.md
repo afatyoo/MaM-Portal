@@ -6,39 +6,72 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [Unreleased] — Mail proxy routing cache and hardening
+## [v1.1.0] — 2026-11-26
+
+One hostname for every mail protocol. MaM now proxies IMAPS, POP3S and SMTPS by
+login, so users keep a single name in their mail client while the portal still
+routes each account to the right Carbonio/Zimbra backend. Tested end to end on a
+dedicated host in front of Carbonio CE 4.5.14 and Zimbra 10.1.21, including the
+real client IP reaching the backend over IMAP, POP3 and SMTP.
 
 ### Added
 
-- Mail proxy routing cache: remembers which backend accepted an address, so a domain that
-  lives on two servers no longer pays the failed attempt on every login. Stored as JSON
-  (`data/mail-route-cache.json`, mode 0600, atomic write), with TTL, entry cap, and a stale
-  entry that is replaced after the next successful login.
-- Admin UI page `/admin/mail`: listener state, open connections, uptime, active limits, and
-  cache statistics with a "clear cache" action. Backed by `GET /api/admin/mail/status` and
-  `DELETE /api/admin/mail/cache`.
+- **Mail proxy** (`mail/`) for IMAPS 993, POP3S 995 and SMTPS 465, enabled from the
+  `[MAIL]` section of `config.ini`. It serves the greeting and the pre-login commands
+  itself, routes by the same `MaMKey_*` domain map as the web login, logs in to the
+  chosen backend over verified TLS, then splices the two connections.
+- The real client IP is forwarded to the backend: `ID ("X-ORIGINATING-IP" ...)` for
+  IMAP, `XOIP` for POP3, `XCLIENT` for SMTP, so audit logs and brute-force protection
+  see the user instead of the proxy.
+- Mail proxy routing cache: remembers which backend accepted an address, so a domain
+  that lives on two servers no longer pays the failed attempt on every login. Stored as
+  JSON (`data/mail-route-cache.json`, mode 0600, atomic write), with a TTL, an entry cap,
+  and a stale entry that is replaced after the next successful login.
+- Admin UI page `/admin/mail`: listener state, open connections, uptime, active limits,
+  and cache statistics with a "clear cache" action. Backed by
+  `GET /api/admin/mail/status` and `DELETE /api/admin/mail/cache`.
 - `[MAIL]` settings: `idle_timeout_sec`, `backend_timeout_sec`, `handshake_timeout_sec`,
-  `fail_limiter_max_keys`, `route_cache_enabled`, `route_cache_file`, `route_cache_ttl_days`,
-  `route_cache_max_entries`.
+  `fail_limiter_max_keys`, `route_cache_enabled`, `route_cache_file`,
+  `route_cache_ttl_days`, `route_cache_max_entries`.
+- Deployment packaging for a dedicated host: `deploy/install.sh` (system user,
+  `/opt/mam-portal`, dependencies, `config.ini` bootstrap, systemd unit),
+  `deploy/mam-portal.service` (`CAP_NET_BIND_SERVICE`, `ProtectSystem=strict`,
+  `LimitNOFILE=65535`), `Dockerfile`, `deploy/docker-compose.yml` with host networking,
+  and `deploy/README.md` as the runbook.
+- `deploy/selfsigned.sh` (hostname plus every local IP as SANs) and `deploy/localca.sh`
+  (a CA with a server certificate signed by it, for clients that refuse a self-signed
+  certificate as a trust anchor).
 
 ### Security
 
-- A connection can send at most 200 pre-login commands, and commands that fail to parse now
-  count as bad. Before this, a client could hold a pre-login slot forever because every
-  command reset the pre-login timeout.
+- A connection can send at most 200 pre-login commands, and commands that fail to parse
+  now count as bad. Before this, a client could hold a pre-login slot forever because
+  every command reset the pre-login timeout.
 - TLS handshake timeout and a `maxConnections` backstop on each listener, because the
   connection limiter only starts after the handshake completes.
-- IMAP tags must be printable ASCII; the configured `hostname` is stripped of control bytes
-  so it cannot break a greeting or the `EHLO` sent to a backend.
-- The failed-login maps are capped (`fail_limiter_max_keys`) so a spray of random addresses or
-  usernames cannot grow memory without bound.
-- The route cache file is written atomically, stored 0600, and read with `O_NOFOLLOW` plus a
-  size cap, so a planted symlink or a corrupt file is not followed.
+- IMAP tags must be printable ASCII; the configured `hostname` is stripped of control
+  bytes so it cannot break a greeting or the `EHLO` sent to a backend.
+- The failed-login maps are capped (`fail_limiter_max_keys`) so a spray of random
+  addresses or usernames cannot grow memory without bound.
+- The route cache file is written atomically, stored 0600, and read with `O_NOFOLLOW`
+  plus a size cap, so a planted symlink or a corrupt file is not followed.
+- `tlsClientError` is logged and counted per listener, so a client that rejects the
+  certificate no longer fails invisibly.
+- The password is never logged or stored, and pre-login buffer, literal and line limits
+  are enforced for all three protocols.
 
 ### Changed
 
-- Routing tries the cached server first when a domain maps to more than one backend; only
-  domains on several servers are cached.
+- Routing tries the cached server first when a domain maps to more than one backend;
+  only domains on several servers are cached.
+
+### Documentation
+
+- `docs/mail-proxy.md`: architecture, the mailboxd ports (7993/7995) needed for the real
+  client IP, the FQDN requirement for SOAP login, the Zimbra firewalld rule, preauth, and
+  the lab results.
+- `README.adoc`, `config.sample.ini` and `deploy/README.md` document the mail proxy and
+  the deployment steps.
 
 ---
 
