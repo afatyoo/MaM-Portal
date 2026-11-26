@@ -233,6 +233,43 @@ Jadi dua syaratnya: IP MaM di `zimbraMailTrustedIP` (plus restart mailboxd) **da
 bukan nginx. SMTP tidak kena masalah ini karena 465 sudah dilayani Postfix langsung, dan XCLIENT
 langsung diterima setelah `smtpd_authorized_xclient_hosts` diisi.
 
+Terverifikasi juga di Zimbra 10.20 (setelah mailboxd dinyalakan):
+
+```
+[ip=192.168.13.120;cid=4;oip=192.168.13.250;ua=MaM-Portal;] imap - ID elapsed=1 (NIO)
+```
+
+### Dua jebakan lain saat deploy
+
+1. **Zimbra memblokir 7993/7995.** Firewalld di sana hanya membuka port standar, jadi koneksi dari
+   MaM gagal dengan `connect EHOSTUNREACH` walau mailboxd listen di `0.0.0.0`. Buka khusus dari IP
+   MaM:
+   ```bash
+   firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="<MAM_IP>" port port="7993" protocol="tcp" accept'
+   firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="<MAM_IP>" port port="7995" protocol="tcp" accept'
+   firewall-cmd --reload
+   ```
+2. **Login webmail (SOAP) butuh hostname, bukan IP.** `server = https://192.168.10.2` gagal dengan
+   `soap_error: fetch failed`, karena `fetch` memverifikasi hostname terhadap CN sertifikat backend.
+   Pakai FQDN backend (`https://ce-rea.afatyo.com`) dan pastikan MaM bisa me-resolve-nya — kalau
+   belum ada DNS, tambahkan ke `/etc/hosts` di server MaM. `mail_host` tetap boleh IP karena jalur
+   mail memakai `mail_servername`.
+
+### Preauth webmail (login satu pintu)
+
+Setelah `preauthkey` per server diisi (domain preauth key, ambil dengan `zmprov gd <domain>
+zimbraPreAuthKey`, atau `zmprov gdpak <domain>` kalau belum ada):
+
+| Uji | Hasil |
+|---|---|
+| `POST /api/login` dengan user CE | `HTTP 200`, `handoffUrl`, `server: MaMKey_2`, 31–73 ms |
+| `GET /handoff/<token>` | `302` ke `https://ce-rea.afatyo.com/service/preauth?account=…&preauth=…` |
+| URL preauth itu | `HTTP/2 302`, `Set-Cookie: ZM_AUTH_TOKEN=…`, `Location: https://ce-rea.afatyo.com/` |
+
+Catatan Zimbra: `zmprov ca` ditolak `service.LICENSE_ERROR` karena lisensi expired, jadi login sukses
+ke Zimbra tetap belum bisa diuji. mailboxd-nya sendiri hanya hidup 60 menit sebelum dimatikan
+`D-ProductLicenseChecker`. Jalur protokolnya tetap terbukti lewat log di atas.
+
 
 ## Nanti (setelah v1)
 
