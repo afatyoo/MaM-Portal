@@ -16,6 +16,7 @@ RUN npm ci --omit=dev && npm cache clean --force
 
 COPY server.js ./
 COPY mail ./mail
+COPY lib ./lib
 COPY tools ./tools
 COPY config.sample.ini ./
 COPY docs ./docs

@@ -77,7 +77,7 @@ fi
 
 log "copying application to ${APP_DIR}"
 mkdir -p "${APP_DIR}"
-for item in server.js package.json package-lock.json config.sample.ini mail tools docs public start.sh; do
+for item in server.js package.json package-lock.json config.sample.ini lib mail tools docs public start.sh; do
     [ -e "${SRC_DIR}/${item}" ] || continue
     cp -a "${SRC_DIR}/${item}" "${APP_DIR}/"
 done
@@ -139,5 +139,6 @@ Next steps:
   2. systemctl restart mam-portal
   3. on every backend, add this server's IP to zimbraMailTrustedIP
      so IMAP/POP logins carry the real client IP
-  4. admin UI: http://<this-host>:8080/admin  (mail proxy page: /admin/mail)
+  4. admin UI: http://127.0.0.1:8080/admin (local only by default; see deploy/README.md)
+     first password: ${APP_DIR}/data/initial-admin-password
 EOF
