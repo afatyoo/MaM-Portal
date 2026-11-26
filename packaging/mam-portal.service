@@ -1,0 +1,39 @@
+[Unit]
+Description=MaM Portal (webmail login + mail proxy)
+Documentation=https://github.com/afatyoo/MaM-Portal
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mam
+Group=mam
+WorkingDirectory=/usr/lib/mam-portal
+Environment=NODE_ENV=production
+Environment=DATA_DIR=/var/lib/mam-portal
+Environment=CONFIG_PATH=/etc/mam-portal/config.ini
+EnvironmentFile=-/etc/mam-portal/mam-portal.env
+ExecStart=/usr/bin/env node server.js
+Restart=on-failure
+RestartSec=2
+
+# Ports 993/995/465 are below 1024: grant the bind capability instead of running as root.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
+# The proxy only needs its own directory; data is in /var/lib, config (edited by the admin UI) in /etc.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+ReadWritePaths=/var/lib/mam-portal /etc/mam-portal
+# TLS sessions and proxy connections are sockets, so this is not cosmetic.
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
