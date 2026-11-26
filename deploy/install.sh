@@ -93,12 +93,12 @@ if [ ! -f "${APP_DIR}/config.ini" ]; then
 fi
 
 if [ -n "${GEN_CERT}" ]; then
-    [ -f "${APP_DIR}/certs/mail.crt" ] && warn "certs/mail.crt already exists, leaving it alone" || {
+    if [ -f "${APP_DIR}/certs/mail.crt" ]; then
+        warn "certs/mail.crt already exists, leaving it alone (use deploy/selfsigned.sh to replace it)"
+    else
         log "generating a self-signed certificate for ${GEN_CERT}"
-        openssl req -x509 -newkey rsa:2048 -nodes -days 397 \
-            -keyout "${APP_DIR}/certs/mail.key" -out "${APP_DIR}/certs/mail.crt" \
-            -subj "/CN=${GEN_CERT}" -addext "subjectAltName=DNS:${GEN_CERT}" >/dev/null 2>&1
-    }
+        APP_DIR="${APP_DIR}" "$(dirname "${BASH_SOURCE[0]}")/selfsigned.sh" "${GEN_CERT}" >/dev/null
+    fi
 fi
 
 # The proxy reads its certificate at start; a missing file would only fail at runtime.
