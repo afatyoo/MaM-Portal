@@ -82,17 +82,38 @@ the proxy logs a warning at start if a server uses it.
 Run these on the Carbonio/Zimbra node, with `<MAM_IP>` replaced by this server:
 
 ```bash
-# IMAP ID / POP3 XOIP
+# 1. trust the proxy for IMAP ID / POP3 XOIP, then restart mailboxd (read at startup)
 su - zextras -c "zmprov ms \$(zmhostname) +zimbraMailTrustedIP <MAM_IP>"
+systemctl restart carbonio-appserver        # or: zmmailboxdctl restart
 
-# SMTP XCLIENT (Postfix). Zimbra has no LDAP attribute for this one.
+# 2. SMTP XCLIENT (Postfix). Zimbra has no LDAP attribute for this one.
 su - zextras -c 'postconf -e "smtpd_authorized_xclient_hosts = <MAM_IP>"'
-systemctl restart carbonio-postfix     # or: systemctl restart zimbra-mta
+systemctl restart carbonio-postfix          # or: systemctl restart zimbra-mta
 ```
 
-Without these, login still works; the backend just records the proxy's address
-instead of the user's. `postconf -e` writes Postfix's `main.cf` directly, so a
-config regeneration can drop it — re-check after Carbonio upgrades.
+**Point `imap_port` / `pop3_port` at mailboxd, not at 993/995.** On both Carbonio and Zimbra,
+993 and 995 belong to the bundled nginx proxy. nginx terminates TLS and forwards on its own, so
+the `ID X-ORIGINATING-IP` / `XOIP` we send stops there and the backend keeps logging the proxy's
+address. Use the mailboxd ports instead:
+
+```ini
+[MaMKey_1]
+mail_host = 10.0.0.11
+mail_servername = mail1.example.com
+imap_port = 7993      # mailboxd IMAPS
+pop3_port = 7995      # mailboxd POP3S
+ca_file = certs/internal-ca.pem
+```
+
+SMTP 465 is served by Postfix directly, so `smtps_port = 465` is fine.
+
+Without these, login still works; the backend just records the proxy's address instead of the
+user's. `postconf -e` writes Postfix's `main.cf` directly, so a config regeneration can drop it —
+re-check after Carbonio upgrades.
+
+Verified on Carbonio CE 4.5.14 (2026-11-26): with 993/995 the log showed
+`ip=10.0.0.x;oip=<proxy>`; with 7993/7995 plus the trusted IP and a mailboxd restart it showed
+`ip=<proxy>;oip=<client>`.
 
 ## Firewall
 
@@ -117,3 +138,7 @@ curl -s -b cookies.txt localhost:8080/api/admin/mail/status | jq .cache
 A successful login on a domain that exists on two backends first shows
 `"cache":"miss"` with two entries in `attempted`, then `"cache":"hit"` with one on
 the next login.
+
+Set a real admin password before exposing the portal: the first start creates
+`admin`/`admin`. Rewrite the hash in `/opt/mam-portal/data/admin_users.json` (bcrypt)
+or delete the file and start with `DEFAULT_ADMIN_USER` / `DEFAULT_ADMIN_PASS` set.

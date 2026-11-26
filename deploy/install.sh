@@ -32,16 +32,43 @@ done
 
 [ "$(id -u)" = "0" ] || die "run as root (sudo)"
 
+install_node_tarball() {
+    local ver="${NODE_TARBALL_VERSION:-22.14.0}" arch tmp
+    case "$(uname -m)" in
+        x86_64|amd64) arch=linux-x64 ;;
+        aarch64|arm64) arch=linux-arm64 ;;
+        *) die "unsupported architecture: $(uname -m)" ;;
+    esac
+    log "downloading node ${ver} (${arch}) from nodejs.org"
+    tmp="$(mktemp -d)"
+    curl -fsSL --connect-timeout 15 --max-time 300 -o "${tmp}/node.tar.xz" \
+        "https://nodejs.org/dist/v${ver}/node-v${ver}-${arch}.tar.xz" || die "node download failed"
+    rm -rf /usr/local/node
+    tar -xJf "${tmp}/node.tar.xz" -C /usr/local
+    mv "/usr/local/node-v${ver}-${arch}" /usr/local/node
+    local b
+    for b in node npm npx; do ln -sf "/usr/local/node/bin/${b}" "/usr/local/bin/${b}"; done
+    rm -rf "${tmp}"
+}
+
 if ! command -v node >/dev/null 2>&1; then
-    log "installing nodejs from apt"
-    apt-get update -qq
-    apt-get install -y -qq nodejs npm
+    # apt is the distro-supported path, but a slow or dead mirror hangs the install
+    # for tens of minutes, so the official tarball is the fallback.
+    if command -v apt-get >/dev/null 2>&1; then
+        log "installing nodejs from apt"
+        apt-get -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 -o Acquire::Retries=1 update -qq \
+            && apt-get -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 -y -qq install nodejs npm \
+            || warn "apt could not install nodejs; using the nodejs.org tarball instead"
+    fi
+    command -v node >/dev/null 2>&1 || install_node_tarball
 fi
 
 NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]')"
 [ "${NODE_MAJOR}" -ge 18 ] || die "node $(node -v) is too old, need 18 or newer"
 
-command -v openssl >/dev/null 2>&1 || apt-get install -y -qq openssl
+command -v openssl >/dev/null 2>&1 \
+    || apt-get -o Acquire::http::Timeout=20 -y -qq install openssl \
+    || die "openssl is required to generate a certificate"
 
 if ! id -u "${APP_USER}" >/dev/null 2>&1; then
     log "creating system user ${APP_USER}"
