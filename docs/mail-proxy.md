@@ -125,9 +125,19 @@ salah). Login sukses ke server lain langsung memperbarui cache.
 
 ## Prasyarat di tiap backend Carbonio/Zimbra (butuh izin)
 
-- IP MaM ke `zimbraMailTrustedIP` → IP asli di IMAP/POP.
-- IP MaM ke `smtpd_authorized_xclient_hosts` Postfix → IP asli di SMTP. Tanpa ini SMTP tetap jalan, IP terlihat sebagai IP MaM.
+- IP MaM ke `zimbraMailTrustedIP`, lalu **restart mailboxd** (`systemctl restart carbonio-appserver` /
+  `zmmailboxdctl restart`). Nilainya dibaca saat start, jadi menambah tanpa restart tidak berefek.
+- `imap_port` / `pop3_port` **harus menunjuk mailboxd** (7993 / 7995), bukan 993 / 995. Di Carbonio
+  maupun Zimbra, 993 dan 995 dilayani nginx; nginx yang menutup TLS lalu meneruskan ke mailboxd,
+  sehingga `ID X-ORIGINATING-IP` dan `XOIP` berhenti di nginx dan `oip` tetap IP proxy. Bukti uji ada
+  di bagian hasil lab v1.2 di bawah.
+- IP MaM ke `smtpd_authorized_xclient_hosts` Postfix → IP asli di SMTP (465 dilayani Postfix langsung,
+  jadi tidak ada masalah nginx). Zimbra tidak punya atribut LDAP untuk ini, set lewat `postconf -e`,
+  dan ingat baris itu bisa hilang saat config diregenerasi.
 - Brute-force protection Carbonio (DoSFilter / lockout) perlu whitelist IP MaM agar satu IP proxy tidak ikut terblokir; limiter MaM yang mengganti perannya.
+
+Kalau `send_originating_ip = false`, semua prasyarat di atas opsional: login tetap jalan, hanya IP
+yang tercatat di backend adalah IP proxy.
 
 ## Admin UI
 
@@ -191,6 +201,38 @@ Catatan:
 - Angka 12 s/25 s dari uji sebelumnya muncul saat backend menahan jawaban gagal ~10 s. Dengan cache,
   login sukses turun ke ~0,2 s karena tidak ada lagi percobaan ke server yang salah.
 - `send_originating_ip = false` di lab, karena IP MaM belum masuk `zimbraMailTrustedIP`/XCLIENT.
+
+## Hasil uji deploy (2026-11-26, server khusus 192.168.13.120)
+
+MaM dipasang sebagai service systemd di host sendiri (Ubuntu 26.04, `deploy/install.sh`), port asli
+993/995/465, sertifikat self-signed `CN=ubuntu26`, CA backend diverifikasi lewat `ca_file`
+(bukan `insecure_tls`). Backend: Zimbra 10.20 (`MaMKey_1`) lalu Carbonio CE 10.2 (`MaMKey_2`).
+
+| Uji | Hasil |
+|---|---|
+| IMAPS LOGIN + SELECT + IDLE | OK, 202–294 ms |
+| POP3S AUTH PLAIN + STAT | OK, 173 ms |
+| SMTPS AUTH PLAIN | OK, 222 ms |
+| TLS client | terverifikasi terhadap `certs/mail.crt` (SAN `DNS:ubuntu26`, `IP:192.168.13.120`) |
+| Cache kosong | `cache: miss`, `attempted: [MaMKey_1, MaMKey_2]` |
+| Cache terisi | `cache: hit`, `attempted: [MaMKey_2]` |
+| `systemctl status mam-portal` | active, 3 listener + portal di 8080 |
+| `GET /api/admin/mail/status` | listener, limit, cache sesuai |
+
+### IP asli client: dua kali gagal sebelum benar
+
+Target: `oip` di backend harus IP client (192.168.13.250), bukan IP MaM (192.168.13.120).
+
+| Percobaan | Konfigurasi | `mailbox.log` | Hasil |
+|---|---|---|---|
+| 1 | 993/995 (nginx), IP MaM baru masuk `zimbraMailTrustedIP` | `ip=192.168.10.2;oip=192.168.13.120`, `via=MaM-Portal` | ID diterima tapi `oip` tetap IP proxy |
+| 2 | sama, mailboxd direstart | tidak berubah | bukan soal cache config |
+| 3 | `imap_port=7993`, `pop3_port=7995` (mailboxd langsung) | `ip=192.168.13.120;oip=192.168.13.250` | **benar** |
+
+Jadi dua syaratnya: IP MaM di `zimbraMailTrustedIP` (plus restart mailboxd) **dan** menembak mailboxd,
+bukan nginx. SMTP tidak kena masalah ini karena 465 sudah dilayani Postfix langsung, dan XCLIENT
+langsung diterima setelah `smtpd_authorized_xclient_hosts` diisi.
+
 
 ## Nanti (setelah v1)
 
