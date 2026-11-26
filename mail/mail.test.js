@@ -2,7 +2,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import net from "net";
 import {
-  LineReader, FailLimiter, ConnLimiter, decodePlain, makeContext, handleConnection, parseMailSection,
+  LineReader, FailLimiter, ConnLimiter, decodePlain, makeContext, handleConnection, parseMailSection, cleanHostname,
 } from "./common.js";
 import { imapSession } from "./imap.js";
 import { pop3Session } from "./pop3.js";
@@ -133,6 +133,7 @@ async function setup(handler, fake) {
     normalizeEmail: (u, d) => (u.includes("@") ? u : `${u}@${d}`),
     log: (e) => logs.push(e),
     delay: async () => {},
+    cacheFile: "",
     connectBackend: (s) => new Promise((res, rej) => {
       const c = net.connect(ports[s.key], "127.0.0.1", () => res(c));
       c.once("error", rej);
@@ -175,6 +176,35 @@ describe("helpers", () => {
     expect(c.acquire("1.1.1.1")).toBe(false);
     c.release("1.1.1.1");
     expect(c.acquire("1.1.1.1")).toBe(true);
+  });
+  it("FailLimiter keeps its map bounded under a spray of keys", () => {
+    const l = new FailLimiter(2, 1000, 5);
+    for (let i = 0; i < 100; i++) { l.fail(`u${i}`, 0); l.fail(`u${i}`, 0); }
+    expect(l.size).toBe(5);
+    expect(l.blocked("u0", 0)).toBe(false);
+    expect(l.blocked("u99", 0)).toBe(true);
+  });
+  it("cleanHostname strips what would break a protocol line", () => {
+    expect(cleanHostname("mail.test")).toBe("mail.test");
+    expect(cleanHostname("mail.test\r\n250 injected")).toBe("mail.test250injected");
+    expect(cleanHostname("has space")).toBe("hasspace");
+    expect(cleanHostname("\r\n")).toBe("localhost");
+    expect(cleanHostname(undefined)).toBe("localhost");
+  });
+  it("parseMailSection defaults the new limits and reads overrides", () => {
+    const d = parseMailSection({ MAIL: {} });
+    expect(d).toMatchObject({
+      handshakeTimeoutSec: 30,
+      failLimiterMaxKeys: 20000,
+      routeCacheEnabled: true,
+      routeCacheFile: "data/mail-route-cache.json",
+      routeCacheTtlDays: 90,
+      routeCacheMaxEntries: 50000,
+    });
+    const o = parseMailSection({ MAIL: {
+      route_cache_enabled: "false", route_cache_ttl_days: "7", handshake_timeout_sec: "5",
+    } });
+    expect(o).toMatchObject({ routeCacheEnabled: false, routeCacheTtlDays: 7, handshakeTimeoutSec: 5 });
   });
 });
 
@@ -245,6 +275,54 @@ describe("IMAP proxy", () => {
     expect(logs.at(-1)).toMatchObject({ reason: "domain_unmapped" });
     c.close();
   });
+
+  it("uses the routing cache so a shared domain stops retrying the wrong server", async () => {
+    const first = client(port);
+    await first.line();
+    first.send('a1 LOGIN carol@shared.com "pässwörd"');
+    expect(await first.until(/^a1 /)).toMatch(/^a1 OK/);
+    expect(logs.at(-1)).toMatchObject({ result: "ok", server_key: "MaMKey_2", attempted: ["MaMKey_1", "MaMKey_2"], cache: "miss" });
+    first.close();
+
+    const second = client(port);
+    await second.line();
+    second.send('a2 LOGIN carol@shared.com "pässwörd"');
+    expect(await second.until(/^a2 /)).toMatch(/^a2 OK/);
+    expect(logs.at(-1)).toMatchObject({ result: "ok", server_key: "MaMKey_2", attempted: ["MaMKey_2"], cache: "hit" });
+    expect(ctx.cache.get("carol@shared.com")).toBe("MaMKey_2");
+    second.close();
+  });
+
+  it("does not cache accounts of a domain that only one server has", async () => {
+    const c = client(port);
+    await c.line();
+    c.send('a1 LOGIN alice "s3cret"');
+    expect(await c.until(/^a1 /)).toMatch(/^a1 OK/);
+    expect(ctx.cache.map.size).toBe(0);
+    c.close();
+  });
+
+  it("rejects a tag with a control byte", async () => {
+    const c = client(port);
+    await c.line();
+    c.s.on("error", () => {});
+    c.s.write("a\x01x NOOP\r\n");
+    expect(await c.line()).toBe("* BAD Invalid command");
+    c.close();
+  });
+
+  it("hangs up on a connection that squats before login", async () => {
+    const c = client(port);
+    await c.line();
+    c.s.on("error", () => {});
+    const closed = new Promise((resolve) => c.s.on("close", resolve));
+    for (let i = 0; i < 205; i++) c.send(`a${i} NOOP`);
+    await Promise.race([
+      closed,
+      new Promise((_, reject) => setTimeout(() => reject(new Error("connection not closed")), 5000)),
+    ]);
+    expect(c.s.destroyed || c.s.readableEnded || c.s.closed).toBe(true);
+  });
 });
 
 // ---- POP3 -----------------------------------------------------------------
@@ -276,6 +354,19 @@ describe("POP3 proxy", () => {
     c.send(`AUTH PLAIN ${b64("\0carol@shared.com\0pässwörd")}`);
     expect(await c.line()).toBe("+OK maildrop ready");
     c.close();
+  });
+
+  it("ends a connection that keeps sending PASS without USER", async () => {
+    const c = client(port);
+    await c.line();
+    c.s.on("error", () => {});
+    const closed = new Promise((resolve) => c.s.on("close", resolve));
+    for (let i = 0; i < 15; i++) c.send("PASS nope");
+    await Promise.race([
+      closed,
+      new Promise((_, reject) => setTimeout(() => reject(new Error("connection not closed")), 5000)),
+    ]);
+    expect(c.s.destroyed || c.s.readableEnded || c.s.closed).toBe(true);
   });
 });
 
@@ -311,5 +402,18 @@ describe("SMTPS proxy", () => {
     c.send(`AUTH PLAIN ${b64("\0alice@a.com\0bad")}`);
     expect(await c.line()).toMatch(/^535 /);
     c.close();
+  });
+
+  it("ends a connection that sprays unsupported commands", async () => {
+    const c = client(port);
+    await c.line();
+    c.s.on("error", () => {});
+    const closed = new Promise((resolve) => c.s.on("close", resolve));
+    for (let i = 0; i < 15; i++) c.send("VRFY root");
+    await Promise.race([
+      closed,
+      new Promise((_, reject) => setTimeout(() => reject(new Error("connection not closed")), 5000)),
+    ]);
+    expect(c.s.destroyed || c.s.readableEnded || c.s.closed).toBe(true);
   });
 });

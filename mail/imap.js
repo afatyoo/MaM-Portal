@@ -1,9 +1,10 @@
 // IMAP pre-login front end: serves CAPABILITY/ID/NOOP until LOGIN or AUTHENTICATE PLAIN,
 // then logs in to the chosen backend and splices the two connections.
-import { LineReader, ProtoError, decodePlain, routeLogin, splice } from "./common.js";
+import { LineReader, ProtoError, decodePlain, routeLogin, splice, MAX_PRELOGIN_COMMANDS } from "./common.js";
 
 export const IMAP_CAPS = "IMAP4rev1 LITERAL+ SASL-IR ID AUTH=PLAIN";
-const TAG_RE = /^[^\s(){%*"\\+\]]{1,64}$/;
+// Printable ASCII only: a tag with a control byte would be echoed back verbatim.
+const TAG_RE = /^[^\x00-\x1f\x7f\s(){%*"\\+\]]{1,64}$/;
 const MAX_LOGIN_FAILS = 3;
 const MAX_BAD = 10;
 
@@ -99,6 +100,7 @@ export async function imapSession(client, ip, ctx) {
   w(`* OK [CAPABILITY ${IMAP_CAPS}] ${ctx.hostname} IMAP4rev1 ready`);
   let bad = 0;
   let fails = 0;
+  let cmds = 0;
 
   const tryLogin = async (tag, user, pass) => {
     const res = await routeLogin({
@@ -116,6 +118,7 @@ export async function imapSession(client, ip, ctx) {
   };
 
   for (;;) {
+    if (++cmds > MAX_PRELOGIN_COMMANDS) return client.end();
     const line = await r.readLine();
     const m = line.match(/^(\S+) +(\S+)(?: (.*))?$/);
     if (!m || !TAG_RE.test(m[1])) {
@@ -151,19 +154,32 @@ export async function imapSession(client, ip, ctx) {
         } catch (e) {
           if (!(e instanceof ProtoError) || /closed/.test(e.message)) throw e;
           w(`${tag} BAD ${e.message}`);
+          if (++bad > MAX_BAD) return client.end();
         }
         break;
       case "AUTHENTICATE": {
         const [mech = "", ir] = rest.split(" ");
-        if (mech.toUpperCase() !== "PLAIN") { w(`${tag} NO [CANNOT] Unsupported mechanism`); break; }
+        if (mech.toUpperCase() !== "PLAIN") {
+          w(`${tag} NO [CANNOT] Unsupported mechanism`);
+          if (++bad > MAX_BAD) return client.end();
+          break;
+        }
         let resp = ir;
         if (resp === undefined) {
           client.write("+ \r\n");
           resp = await r.readLine();
         }
-        if (resp === "*") { w(`${tag} BAD Authentication cancelled`); break; }
+        if (resp === "*") {
+          w(`${tag} BAD Authentication cancelled`);
+          if (++bad > MAX_BAD) return client.end();
+          break;
+        }
         const c = decodePlain(resp === "=" ? "" : resp);
-        if (!c) { w(`${tag} BAD Invalid SASL response`); break; }
+        if (!c) {
+          w(`${tag} BAD Invalid SASL response`);
+          if (++bad > MAX_BAD) return client.end();
+          break;
+        }
         creds = c;
         break;
       }

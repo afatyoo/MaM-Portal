@@ -39,8 +39,16 @@ send_originating_ip = true     ; ID X-ORIGINATING-IP, XOIP, XCLIENT
 max_conn_per_ip = 20
 max_conn_total = 2000
 prelogin_timeout_sec = 60
+idle_timeout_sec = 2100
+backend_timeout_sec = 15
+handshake_timeout_sec = 30     ; batas TLS handshake yang menggantung
 auth_fail_per_ip = 10          ; per 10 menit
 auth_fail_per_user = 5         ; per 10 menit
+fail_limiter_max_keys = 20000  ; batas IP/user di penghitung gagal login
+route_cache_enabled = true     ; cache email -> server (lihat bagian Cache)
+route_cache_file = data/mail-route-cache.json
+route_cache_ttl_days = 90
+route_cache_max_entries = 50000
 ```
 
 Per `MaMKey_N` (opsional): `mail_host` (default: host dari `server`), `imap_port=993`,
@@ -50,12 +58,35 @@ Per `MaMKey_N` (opsional): `mail_host` (default: host dari `server`), `imap_port
 
 1. Ambil domain dari username (tanpa `@` → `default_domain`).
 2. `findCandidates()` yang sudah ada.
-3. Coba login ke kandidat sesuai urutan; berhenti di yang pertama berhasil.
-4. Tidak ada kandidat → tolak login (pesan generik).
+3. Kalau domain ada di lebih dari satu server dan cache punya jawaban untuk alamat itu,
+coba server dari cache lebih dulu.
+4. Coba login ke kandidat sesuai urutan; berhenti di yang pertama berhasil.
+5. Login berhasil pada domain multi-server → simpan email → server ke cache.
+6. Tidak ada kandidat → tolak login (pesan generik).
 
 Catatan risiko: domain yang ada di dua server → password salah dicoba di dua server,
 bisa memicu lockout di keduanya. Mitigasi v1: limiter per user di MaM berlaku sebelum
-mencoba backend. Solusi penuh (cache + probe admin SOAP) dirancang di bagian "Nanti".
+mencoba backend. Cache mengurangi kasus ini karena login berikutnya langsung ke server
+yang benar. Probe admin SOAP tetap di bagian "Nanti".
+
+## Cache email → server
+
+Kenapa ada: backend yang menolak login menahan jawaban sekitar 10 detik, jadi login ke
+domain yang punya dua server bisa 12 detik (sukses) sampai 25 detik (password salah).
+Cache memotong percobaan yang salah itu.
+
+- File JSON (`route_cache_file`, default `data/mail-route-cache.json`), mode `0600`,
+karena isinya alamat email. Tidak pernah berisi password.
+- Ditulis lewat nama temp acak + `fsync` + `rename`, dibaca dengan `O_NOFOLLOW` dan
+batas ukuran, jadi symlink atau file rusak tidak diikuti.
+- Isi: `email → { server, at }`. TTL (`route_cache_ttl_days`, default 90) dan batas
+jumlah entri (`route_cache_max_entries`).
+- Hanya dipakai kalau domain ada di lebih dari satu server; domain satu server tidak
+butuh cache.
+- Entri yang salah tidak dihapus saat login gagal (password salah bukan bukti cache
+salah). Login sukses ke server lain langsung memperbarui cache.
+- Bisa dikosongkan dari admin UI atau `DELETE /api/admin/mail/cache` (opsional
+`?email=` untuk satu alamat).
 
 ## Alur per protokol
 
@@ -81,6 +112,12 @@ mencoba backend. Solusi penuh (cache + probe admin SOAP) dirancang di bagian "Na
 - TLS via modul `tls` Node (OpenSSL); min TLS 1.2. Ke backend selalu TLS dengan verifikasi sertifikat (`ca_file`); `insecure_tls` hanya untuk lab dan dicatat sebagai warning saat start.
 - Parser hanya aktif sampai login; panjang baris maks 8 KB, literal maks 8 KB, perintah tak dikenal ditolak.
 - Limiter: koneksi per IP, total koneksi, timeout pra-login, gagal auth per IP dan per user (sliding window, backoff, respons gagal ditunda acak 1–3 detik).
+- Sebelum login, satu koneksi maks 200 perintah, dan semua perintah yang gagal diparse ikut dihitung. Tanpa ini client bisa menahan slot pra-login selamanya karena tiap perintah mereset timeout.
+- `maxConnTotal` juga dipasang sebagai `maxConnections` listener, dan TLS handshake dibatasi `handshake_timeout_sec`, karena limiter koneksi baru jalan setelah TLS selesai.
+- `hostname` dibersihkan dari karakter kontrol saat config dibaca, jadi tidak bisa memecah baris greeting atau `EHLO` ke backend.
+- Tag IMAP hanya boleh ASCII tercetak; tag dengan byte kontrol ditolak agar tidak dipantulkan kembali ke client.
+- Penghitung gagal login dibatasi `fail_limiter_max_keys` supaya spray IP/username tidak membengkakkan memori.
+- Cache disimpan `0600` dan ditulis atomik; file tidak diikuti bila berupa symlink.
 - Password tidak pernah di-log, tidak disimpan, buffer kredensial dibuang setelah login.
 - Pesan error ke client generik (tidak membocorkan apakah user/domain ada).
 - Log JSONL: `timestamp, proto, ip, email, domain, server_key, result, reason, ms`.
@@ -94,7 +131,8 @@ mencoba backend. Solusi penuh (cache + probe admin SOAP) dirancang di bagian "Na
 
 ## Admin UI
 
-- Status listener (port, aktif/tidak, koneksi aktif).
+- Halaman **Mail Proxy** (`/admin/mail`): status tiap listener, koneksi aktif, uptime, limit yang berlaku, dan statistik cache (entri, hit rate, file, TTL) plus tombol kosongkan cache. Auto refresh 10 detik.
+- Sumber datanya `GET /api/admin/mail/status`.
 - Statistik dan log per protokol, memakai log JSONL yang sudah ada.
 
 ## Rencana kerja
@@ -104,13 +142,13 @@ mencoba backend. Solusi penuh (cache + probe admin SOAP) dirancang di bagian "Na
 3. `mail/pop3.js` + test.
 4. `mail/smtp.js` + test (AUTH PLAIN/LOGIN, XCLIENT).
 5. Integrasi ke `server.js`, `config.sample.ini`, `start.sh`, README.
-6. Admin UI: status + statistik per protokol.
+6. Admin UI: status + statistik per protokol. ✅ (halaman `/admin/mail`, 2026-11-26)
 7. Uji lab: MaM di Mac (port 10993/10995/10465), Thunderbird + `openssl s_client`. Backend:
    - `192.168.10.201` — Carbonio 26.9.2 (Advanced), domain `demo.aktiva.co.id`. Port 993/995/465 dipakai Switchboard; tidak disentuh.
    - `192.168.10.2` — `ce-rea.afatyo.com`, Carbonio CE (core 4.5.14), domain `afatyo.com`, `afatyo.id`.
    - `192.168.10.20` — `kizuna.afatyo.com`, Zimbra 10.1.21 Network Edition (Rocky 9). Dinyalakan user dulu.
 8. Uji routing multi-backend (Carbonio + Zimbra; protokol `ID`/`XOIP`/`XCLIENT`/`AuthRequest` sama).
-9. Security review kode.
+9. Security review kode. ✅ (putaran 1: squatting pra-login, tag kontrol, batas memori limiter, 2026-11-26)
 
 ## Hasil uji lab (2026-11-25)
 
@@ -130,8 +168,33 @@ Catatan:
 - Akun baru di Zimbra 10.20 belum bisa dibuat karena lisensinya expired 2026-11-23, jadi login sukses ke Zimbra belum diuji.
 - IP MaM belum didaftarkan di `zimbraMailTrustedIP`/XCLIENT backend, jadi IP asli client belum diterapkan di backend (login tetap jalan).
 
+## Hasil uji lab v1.1 (2026-11-26)
+
+MaM dijalankan di Mac (127.0.0.1:10993/10995/10465), urutan backend `afatyo.com`: Zimbra 10.20 lalu Carbonio CE 10.2.
+Akun `mamproxy-ce@afatyo.com` hanya ada di CE, jadi jalur fallback sekaligus memverifikasi cache.
+
+| Uji | Hasil |
+|---|---|
+| IMAPS login pertama (cache kosong) | OK, `cache: miss`, `attempted: [MaMKey_1, MaMKey_2]`, 311 ms |
+| POP3S setelah cache terisi | OK, `cache: hit`, `attempted: [MaMKey_2]`, 108 ms |
+| SMTPS setelah cache terisi | OK, `cache: hit`, `attempted: [MaMKey_2]`, 122 ms |
+| Restart MaM, lalu login | entri dibaca dari file cache, `cache: hit` |
+| Cache sengaja diarahkan ke server yang salah | `cache: stale`, dicoba 2 server, sukses di `MaMKey_2`, cache diperbarui |
+| Password salah dengan cache terisi | 13 s (tanpa cache 22 s), entri cache **tidak** dihapus |
+| File cache | mode `0600`, isi `email → {server, at}` |
+| `DELETE /api/admin/mail/cache` | `removed: 1`, file cache ikut dihapus |
+| `GET /api/admin/mail/status` | listener, limit, dan statistik cache sesuai |
+
+Catatan:
+- Zimbra 10.20 sekarang menerima TLS lalu langsung menutup sesi IMAP (lisensi expired 2026-11-23),
+  jadi login sukses ke Zimbra masih belum bisa diuji. Semua jalur cache di atas terbukti lewat CE.
+- Angka 12 s/25 s dari uji sebelumnya muncul saat backend menahan jawaban gagal ~10 s. Dengan cache,
+  login sukses turun ke ~0,2 s karena tidak ada lagi percobaan ke server yang salah.
+- `send_originating_ip = false` di lab, karena IP MaM belum masuk `zimbraMailTrustedIP`/XCLIENT.
+
 ## Nanti (setelah v1)
 
-- Cache user→server (file JSON, TTL) + probe `GetAccountInfo` via admin SOAP untuk domain yang ada di dua server.
+- Probe `GetAccountInfo` via admin SOAP untuk domain yang ada di dua server (menggantikan
+tebakan urutan saat cache masih kosong).
 - STARTTLS 143/110/587.
 - SNI per domain (gabungan dengan pendekatan Switchboard) jika perlu banyak nama.

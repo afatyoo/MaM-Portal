@@ -235,6 +235,7 @@ app.use(express.urlencoded({ extended: true }));
 
 const FileStore = FileStoreFactory(session);
 const cfg0 = loadConfig();
+let mailCtx = null;
 
 
 const HANDOFF_TTL_MS = Number(process.env.HANDOFF_TTL_MS || 60_000);
@@ -646,9 +647,22 @@ app.get("/api/admin/logs", requireAdmin, (req,res)=>{
 app.get("/api/admin/mail/status", requireAdmin, (req,res)=>{
   res.json({
     enabled: mailStatus.enabled,
+    hostname: mailStatus.hostname || "",
+    started_at: mailStatus.startedAt,
     listeners: mailStatus.listeners,
     connections: typeof mailStatus.connections === "function" ? mailStatus.connections() : 0,
+    limits: mailStatus.limits || {},
+    cache: typeof mailStatus.cache === "function" ? mailStatus.cache() : null,
   });
+});
+
+// Drop a cached address -> server mapping, or the whole cache, after moving an account.
+app.delete("/api/admin/mail/cache", requireAdmin, (req,res)=>{
+  const cache = mailCtx && mailCtx.cache;
+  if(!cache) return res.status(400).json({error:"cache routing mail tidak aktif"});
+  const email = String(req.body?.email || req.query.email || "").trim().toLowerCase();
+  if(email) return res.json({ok:true, removed: cache.delete(email) ? 1 : 0, email});
+  res.json({ok:true, removed: cache.clear()});
 });
 
 app.get("/api/admin/users", requireAdmin, (req,res)=>{
@@ -693,7 +707,7 @@ async function start(){
   }
 
   try {
-    startMailProxy({
+    mailCtx = startMailProxy({
       getConfig: loadConfig,
       findCandidates,
       normalizeEmail,

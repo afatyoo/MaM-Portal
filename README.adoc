@@ -18,11 +18,21 @@ image::MaM-Portal.png[]
 * Seamless webmail redirect using *Preauth*
 * Supports *multiple servers* with fallback order
 
+=== Mail Proxy (optional, `[MAIL]` in `config.ini`)
+* One hostname for IMAPS 993, POP3S 995, and SMTPS 465 across every backend
+* Routes by login: the domain map in each `MaMKey_*` decides the backend
+* Remembers which server accepted an address (routing cache), so a domain that lives on two servers stops retrying the wrong one
+* Real client IP forwarded to the backend (`ID`, `XOIP`, `XCLIENT`)
+* Per IP / per user connection and failure limits, pre-login timeout, TLS 1.2 minimum
+* Status and cache statistics in the admin UI at `/admin/mail`
+* Spec and lab results: `docs/mail-proxy.md`
+
 === Admin Dashboard
 * Manage Zimbra / Carbonio servers
 * Map domains to each server
 * Test SOAP authentication connectivity
 * Manage admin users
+* Mail proxy status and routing cache page
 * Passwords stored as *bcrypt hashes*
 * Session-based admin login
 
@@ -51,10 +61,19 @@ image::MaM-Portal.png[]
 ├── config.ini
 ├── package.json
 ├── server.js
+├── mail/
+│   ├── index.js
+│   ├── common.js
+│   ├── imap.js
+│   ├── pop3.js
+│   ├── smtp.js
+│   ├── route-cache.js
+│   └── *.test.js
 ├── public/
 ├── data/
 │   ├── admin_users.json
 │   ├── login_attempts.jsonl
+│   ├── mail-route-cache.json
 │   └── sessions/
 ├── logs/
 ├── start.sh
