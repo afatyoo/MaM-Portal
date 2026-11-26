@@ -42,11 +42,18 @@ export function startMailProxy(deps) {
   ];
   for (const [name, port, handler] of defs) {
     if (!port) continue;
-    const st = { name, port, listening: false, error: "" };
+    const st = { name, port, listening: false, error: "", tlsErrors: 0 };
     mailStatus.listeners.push(st);
     const srv = tls.createServer(tlsOpts, (sock) => handleConnection(sock, handler, ctx));
     if (m.maxConnTotal > 0) srv.maxConnections = m.maxConnTotal;
-    srv.on("tlsClientError", () => {});
+    // A client that rejects our certificate never sends a login, so without this the
+    // failure leaves no trace anywhere.
+    srv.on("tlsClientError", (err) => {
+      st.tlsErrors = (st.tlsErrors || 0) + 1;
+      const msg = String(err?.message || err).slice(0, 160);
+      console.error(`[mail] ${name} :${port} tls client error: ${msg}`);
+      if (typeof ctx.log === "function") ctx.log({ scope: "mail", proto: name, result: "fail", reason: "tls_client_error", error: msg });
+    });
     srv.on("error", (e) => { st.error = e.message; console.error(`[mail] ${name} :${port} error: ${e.message}`); });
     srv.listen(port, m.bindHost, () => {
       st.listening = true;
