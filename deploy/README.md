@@ -107,6 +107,24 @@ ca_file = certs/internal-ca.pem
 
 SMTP 465 is served by Postfix directly, so `smtps_port = 465` is fine.
 
+Zimbra blocks 7993/7995 by default (firewalld only opens the standard ports, and the
+connection fails with `EHOSTUNREACH` even though mailboxd listens on `0.0.0.0`). Open
+them for the proxy only:
+
+```bash
+firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="<MAM_IP>" port port="7993" protocol="tcp" accept'
+firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="<MAM_IP>" port port="7995" protocol="tcp" accept'
+firewall-cmd --reload
+```
+
+**`server =` must be the backend FQDN, not an IP.** Webmail login posts SOAP to `server + soap_path`,
+and `fetch` verifies the hostname against the backend certificate: `https://10.0.0.11` fails with
+`soap_error: fetch failed`. `mail_host` may stay an IP because the mail path uses `mail_servername`.
+If the proxy host has no DNS for those names, add them to `/etc/hosts`.
+
+**`preauthkey` is required for webmail login**, not for the mail proxy. Read the domain key with
+`zmprov gd <domain> zimbraPreAuthKey`, or create one with `zmprov gdpak <domain>`.
+
 Without these, login still works; the backend just records the proxy's address instead of the
 user's. `postconf -e` writes Postfix's `main.cf` directly, so a config regeneration can drop it —
 re-check after Carbonio upgrades.
