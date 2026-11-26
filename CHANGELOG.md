@@ -6,7 +6,9 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [Unreleased]
+## [v1.2.0] — 2026-11-26
+
+Install MaM Portal from a Debian package.
 
 ### Added
 
