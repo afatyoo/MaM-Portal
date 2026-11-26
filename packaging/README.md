@@ -33,13 +33,24 @@ other install methods, see `deploy/README.md` in the repository.
 
 ## Migrate from `deploy/install.sh`
 
+Copy config, certificates and data **before** installing the package, so it does
+not generate a new config or an unused admin password. `/opt/mam-portal` is left
+untouched for rollback.
+
 ```bash
 sudo systemctl disable --now mam-portal
-sudo rm /etc/systemd/system/mam-portal.service
-sudo apt install ./mam-portal_<version>_all.deb
-sudo cp /opt/mam-portal/config.ini /etc/mam-portal/config.ini
-sudo cp /opt/mam-portal/certs/* /etc/mam-portal/certs/
+sudo mv /etc/systemd/system/mam-portal.service /root/mam-portal.service.old
+sudo install -d /etc/mam-portal/certs /var/lib/mam-portal
+sudo cp -a /opt/mam-portal/config.ini /etc/mam-portal/
+sudo cp -a /opt/mam-portal/certs/. /etc/mam-portal/certs/
 sudo cp -a /opt/mam-portal/data/. /var/lib/mam-portal/
+sudo apt install ./mam-portal_<version>_all.deb
 sudo chown -R mam:mam /etc/mam-portal/config.ini /etc/mam-portal/certs /var/lib/mam-portal
 sudo systemctl enable --now mam-portal
 ```
+
+The unit runs `/usr/bin/node` (the `nodejs` package), not a node installed from a
+tarball under `/usr/local`.
+
+Rollback: `sudo apt remove mam-portal`, move the old unit back to
+`/etc/systemd/system/`, then `sudo systemctl daemon-reload && sudo systemctl enable --now mam-portal`.

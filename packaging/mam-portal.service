@@ -13,7 +13,7 @@ Environment=NODE_ENV=production
 Environment=DATA_DIR=/var/lib/mam-portal
 Environment=CONFIG_PATH=/etc/mam-portal/config.ini
 EnvironmentFile=-/etc/mam-portal/mam-portal.env
-ExecStart=/usr/bin/env node server.js
+ExecStart=/usr/bin/node server.js
 Restart=on-failure
 RestartSec=2
 
