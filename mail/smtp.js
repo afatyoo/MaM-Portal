@@ -1,7 +1,7 @@
 // SMTPS (465) pre-login front end: EHLO + AUTH PLAIN/LOGIN, then backend AUTH (with XCLIENT
 // for the real client IP when the backend allows it) and splice.
 import net from "net";
-import { LineReader, decodeB64, decodePlain, routeLogin, splice } from "./common.js";
+import { LineReader, decodeB64, decodePlain, routeLogin, splice, MAX_PRELOGIN_COMMANDS } from "./common.js";
 
 const MAX_LOGIN_FAILS = 3;
 const MAX_BAD = 10;
@@ -53,8 +53,10 @@ export async function smtpSession(client, ip, ctx) {
   let greeted = false;
   let bad = 0;
   let fails = 0;
+  let cmds = 0;
 
   for (;;) {
+    if (++cmds > MAX_PRELOGIN_COMMANDS) return client.end();
     const line = await r.readLine();
     const sp = line.indexOf(" ");
     const cmd = (sp < 0 ? line : line.slice(0, sp)).toUpperCase();
@@ -62,7 +64,7 @@ export async function smtpSession(client, ip, ctx) {
     let creds = null;
     switch (cmd) {
       case "EHLO":
-        if (!arg) { w("501 5.5.4 Syntax: EHLO hostname"); break; }
+        if (!arg) { w("501 5.5.4 Syntax: EHLO hostname"); if (++bad > MAX_BAD) return client.end(); break; }
         greeted = true;
         w(`250-${ctx.hostname}`);
         w("250-AUTH PLAIN LOGIN");
@@ -70,7 +72,7 @@ export async function smtpSession(client, ip, ctx) {
         w("250 ENHANCEDSTATUSCODES");
         break;
       case "HELO":
-        if (!arg) { w("501 5.5.4 Syntax: HELO hostname"); break; }
+        if (!arg) { w("501 5.5.4 Syntax: HELO hostname"); if (++bad > MAX_BAD) return client.end(); break; }
         greeted = true;
         w(`250 ${ctx.hostname}`);
         break;
@@ -91,28 +93,29 @@ export async function smtpSession(client, ip, ctx) {
         w("530 5.7.0 Authentication required");
         break;
       case "AUTH": {
-        if (!greeted) { w("503 5.5.1 EHLO first"); break; }
+        if (!greeted) { w("503 5.5.1 EHLO first"); if (++bad > MAX_BAD) return client.end(); break; }
         const [mechRaw = "", ir] = arg.split(" ");
         const mech = mechRaw.toUpperCase();
         if (mech === "PLAIN") {
           let resp = ir;
           if (resp === undefined) { w("334 "); resp = await r.readLine(); }
-          if (resp === "*") { w("501 5.7.0 Authentication cancelled"); break; }
+          if (resp === "*") { w("501 5.7.0 Authentication cancelled"); if (++bad > MAX_BAD) return client.end(); break; }
           creds = decodePlain(resp === "=" ? "" : resp);
-          if (!creds) w("501 5.5.2 Invalid SASL response");
+          if (!creds) { w("501 5.5.2 Invalid SASL response"); if (++bad > MAX_BAD) return client.end(); }
         } else if (mech === "LOGIN") {
           let u = ir;
           if (u === undefined) { w("334 VXNlcm5hbWU6"); u = await r.readLine(); }
-          if (u === "*") { w("501 5.7.0 Authentication cancelled"); break; }
+          if (u === "*") { w("501 5.7.0 Authentication cancelled"); if (++bad > MAX_BAD) return client.end(); break; }
           w("334 UGFzc3dvcmQ6");
           const p = await r.readLine();
-          if (p === "*") { w("501 5.7.0 Authentication cancelled"); break; }
+          if (p === "*") { w("501 5.7.0 Authentication cancelled"); if (++bad > MAX_BAD) return client.end(); break; }
           const user = decodeB64(u);
           const pass = decodeB64(p);
-          if (!user || !pass) { w("501 5.5.2 Invalid SASL response"); break; }
+          if (!user || !pass) { w("501 5.5.2 Invalid SASL response"); if (++bad > MAX_BAD) return client.end(); break; }
           creds = { user, pass };
         } else {
           w("504 5.5.4 Unsupported mechanism");
+          if (++bad > MAX_BAD) return client.end();
         }
         break;
       }

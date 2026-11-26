@@ -8,6 +8,7 @@ import Dashboard from '@/pages/Dashboard';
 import Logs from '@/pages/Logs';
 import AdminUsers from '@/pages/AdminUsers';
 import Servers from '@/pages/Servers';
+import MailProxy from '@/pages/MailProxy';
 
 const themeConfig = {
   token: {
@@ -43,6 +44,7 @@ const App = () => (
             >
               <Route index element={<Dashboard />} />
               <Route path="servers" element={<Servers />} />
+              <Route path="mail" element={<MailProxy />} />
               <Route path="logs" element={<Logs />} />
               <Route path="users" element={<AdminUsers />} />
             </Route>

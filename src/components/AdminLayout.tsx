@@ -8,6 +8,7 @@ import {
   MenuFoldOutlined,
   MenuUnfoldOutlined,
   CloudServerOutlined,
+  MailOutlined,
 } from '@ant-design/icons';
 import { useNavigate, useLocation, Outlet } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
@@ -32,6 +33,11 @@ const AdminLayout: React.FC = () => {
       key: '/servers',
       icon: <CloudServerOutlined />,
       label: 'Servers',
+    },
+    {
+      key: '/mail',
+      icon: <MailOutlined />,
+      label: 'Mail Proxy',
     },
     {
       key: '/logs',

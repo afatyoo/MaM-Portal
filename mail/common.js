@@ -4,8 +4,16 @@ import tls from "tls";
 import net from "net";
 import fs from "fs";
 import path from "path";
+import { RouteCache } from "./route-cache.js";
 
 export class ProtoError extends Error {}
+
+/**
+ * Hard cap on commands a connection may send before it is authenticated. Without it
+ * a client can keep a pre-login slot forever: every command resets the pre-login
+ * timeout, and commands that fail to parse never touched the bad-command counter.
+ */
+export const MAX_PRELOGIN_COMMANDS = 200;
 
 export const EMAIL_RE = /^[A-Za-z0-9._%+\-=']{1,128}@[A-Za-z0-9.-]{1,253}$/;
 
@@ -75,18 +83,30 @@ export function cleanIp(a) {
   return String(a || "").replace(/^::ffff:/i, "");
 }
 
-/** Sliding-window failure counter (per IP or per user). */
+/**
+ * Sliding-window failure counter (per IP or per user). `maxKeys` keeps a spray of
+ * random addresses or usernames from growing the map without bound.
+ */
 export class FailLimiter {
-  constructor(limit, windowMs) { this.limit = limit; this.windowMs = windowMs; this.m = new Map(); }
+  constructor(limit, windowMs, maxKeys = 0) {
+    this.limit = limit;
+    this.windowMs = windowMs;
+    this.maxKeys = maxKeys > 0 ? maxKeys : 0;
+    this.m = new Map();
+  }
   _get(key, now) {
     const a = (this.m.get(key) || []).filter((t) => now - t < this.windowMs);
     if (a.length) this.m.set(key, a); else this.m.delete(key);
     return a;
   }
+  _evict() {
+    while (this.maxKeys && this.m.size > this.maxKeys) this.m.delete(this.m.keys().next().value);
+  }
   blocked(key, now = Date.now()) { return this.limit > 0 && this._get(key, now).length >= this.limit; }
-  fail(key, now = Date.now()) { const a = this._get(key, now); a.push(now); this.m.set(key, a); }
+  fail(key, now = Date.now()) { const a = this._get(key, now); a.push(now); this.m.set(key, a); this._evict(); }
   reset(key) { this.m.delete(key); }
   sweep(now = Date.now()) { for (const k of [...this.m.keys()]) this._get(k, now); }
+  get size() { return this.m.size; }
 }
 
 /** Concurrent connection limits (per IP and total). */
@@ -113,13 +133,22 @@ const toNum = (v, d) => {
   return Number.isFinite(n) ? n : d;
 };
 
+/**
+ * The hostname shows up in greetings and in EHLO to a backend, so it has to be a
+ * plain protocol token: no control characters, no spaces.
+ */
+export function cleanHostname(v, fallback = "localhost") {
+  const s = String(v ?? "").replace(/[^\x21-\x7e]/g, "").slice(0, 253);
+  return s || fallback;
+}
+
 /** Parse the [MAIL] section of config.ini. */
 export function parseMailSection(cfg) {
   const m = (cfg && cfg.MAIL) || {};
   return {
     enabled: toBool(m.enabled),
     bindHost: String(m.bind_host || "0.0.0.0").trim(),
-    hostname: String(m.hostname || "localhost").trim(),
+    hostname: cleanHostname(m.hostname),
     imapsPort: toNum(m.imaps_port, 993),
     pop3sPort: toNum(m.pop3s_port, 995),
     smtpsPort: toNum(m.smtps_port, 465),
@@ -131,9 +160,15 @@ export function parseMailSection(cfg) {
     preloginTimeoutSec: toNum(m.prelogin_timeout_sec, 60),
     idleTimeoutSec: toNum(m.idle_timeout_sec, 35 * 60),
     backendTimeoutSec: toNum(m.backend_timeout_sec, 15),
+    handshakeTimeoutSec: toNum(m.handshake_timeout_sec, 30),
     authFailPerIp: toNum(m.auth_fail_per_ip, 10),
     authFailPerUser: toNum(m.auth_fail_per_user, 5),
     authFailWindowSec: toNum(m.auth_fail_window_sec, 600),
+    failLimiterMaxKeys: toNum(m.fail_limiter_max_keys, 20000),
+    routeCacheEnabled: toBool(m.route_cache_enabled, true),
+    routeCacheFile: String(m.route_cache_file || "data/mail-route-cache.json").trim(),
+    routeCacheTtlDays: toNum(m.route_cache_ttl_days, 90),
+    routeCacheMaxEntries: toNum(m.route_cache_max_entries, 50000),
   };
 }
 
@@ -205,10 +240,20 @@ export function makeContext(deps) {
     backendMs: m.backendTimeoutSec * 1000,
     maxLine: 8192,
     conns: new ConnLimiter(m.maxConnPerIp, m.maxConnTotal),
-    ipFail: new FailLimiter(m.authFailPerIp, windowMs),
-    userFail: new FailLimiter(m.authFailPerUser, windowMs),
+    ipFail: new FailLimiter(m.authFailPerIp, windowMs, m.failLimiterMaxKeys),
+    userFail: new FailLimiter(m.authFailPerUser, windowMs, m.failLimiterMaxKeys),
     delay: deps.delay || randomDelay,
   };
+  if (m.routeCacheEnabled) {
+    ctx.cache = deps.cache || new RouteCache({
+      file: deps.cacheFile !== undefined ? deps.cacheFile : resolvePath(deps.baseDir || ".", m.routeCacheFile),
+      ttlMs: m.routeCacheTtlDays > 0 ? m.routeCacheTtlDays * 86400000 : 0,
+      maxEntries: m.routeCacheMaxEntries,
+      log: deps.log,
+    });
+  } else {
+    ctx.cache = null;
+  }
   ctx.connectBackend = deps.connectBackend || ((s, proto) => connectTls({
     host: s.mail.host,
     servername: s.mail.servername,
@@ -248,9 +293,17 @@ export async function routeLogin({ ctx, proto, ip, user, password, login }) {
   const candidates = ctx.findCandidates(cfg.servers, domain);
   if (!candidates.length) return reject("domain_unmapped");
 
+  // A domain on several servers is the slow case, so try the server that accepted
+  // this address last first. A stale entry only costs one extra attempt, and the
+  // new answer is cached right after a successful login.
+  const cached = ctx.cache && candidates.length > 1 ? ctx.cache.get(email) : null;
+  const ordered = cached
+    ? [...candidates.filter((s) => s.key === cached), ...candidates.filter((s) => s.key !== cached)]
+    : candidates;
+
   const attempted = [];
   let rejectedByBackend = false;
-  for (const s of candidates) {
+  for (const s of ordered) {
     attempted.push(s.key);
     let sock;
     try {
@@ -263,7 +316,8 @@ export async function routeLogin({ ctx, proto, ip, user, password, login }) {
       const r = await login(sock, s, email);
       if (r.ok) {
         ctx.userFail.reset(email);
-        record("ok", { server_key: s.key, attempted });
+        if (ctx.cache && candidates.length > 1) ctx.cache.set(email, s.key);
+        record("ok", { server_key: s.key, attempted, cache: cached === s.key ? "hit" : cached ? "stale" : "miss" });
         return { sock, reader: r.reader, server: s, reply: r.reply };
       }
       rejectedByBackend = true;

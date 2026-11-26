@@ -6,6 +6,42 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [Unreleased] — Mail proxy routing cache and hardening
+
+### Added
+
+- Mail proxy routing cache: remembers which backend accepted an address, so a domain that
+  lives on two servers no longer pays the failed attempt on every login. Stored as JSON
+  (`data/mail-route-cache.json`, mode 0600, atomic write), with TTL, entry cap, and a stale
+  entry that is replaced after the next successful login.
+- Admin UI page `/admin/mail`: listener state, open connections, uptime, active limits, and
+  cache statistics with a "clear cache" action. Backed by `GET /api/admin/mail/status` and
+  `DELETE /api/admin/mail/cache`.
+- `[MAIL]` settings: `idle_timeout_sec`, `backend_timeout_sec`, `handshake_timeout_sec`,
+  `fail_limiter_max_keys`, `route_cache_enabled`, `route_cache_file`, `route_cache_ttl_days`,
+  `route_cache_max_entries`.
+
+### Security
+
+- A connection can send at most 200 pre-login commands, and commands that fail to parse now
+  count as bad. Before this, a client could hold a pre-login slot forever because every
+  command reset the pre-login timeout.
+- TLS handshake timeout and a `maxConnections` backstop on each listener, because the
+  connection limiter only starts after the handshake completes.
+- IMAP tags must be printable ASCII; the configured `hostname` is stripped of control bytes
+  so it cannot break a greeting or the `EHLO` sent to a backend.
+- The failed-login maps are capped (`fail_limiter_max_keys`) so a spray of random addresses or
+  usernames cannot grow memory without bound.
+- The route cache file is written atomically, stored 0600, and read with `O_NOFOLLOW` plus a
+  size cap, so a planted symlink or a corrupt file is not followed.
+
+### Changed
+
+- Routing tries the cached server first when a domain maps to more than one backend; only
+  domains on several servers are cached.
+
+---
+
 ## [v1.0.0] — First Stable Release
 
 ### Overview

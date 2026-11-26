@@ -64,3 +64,35 @@ export interface TestConnectionResult {
     status: number;
   };
 }
+
+export interface MailListener {
+  name: string;
+  port: number;
+  listening: boolean;
+  error: string;
+}
+
+export interface MailCacheStats {
+  enabled: boolean;
+  file: string;
+  entries: number;
+  hits: number;
+  misses: number;
+  hit_rate: number;
+  saves: number;
+  dropped: number;
+  ttl_days: number;
+  max_entries: number;
+  last_saved_at: string | null;
+  error: string;
+}
+
+export interface MailStatus {
+  enabled: boolean;
+  hostname?: string;
+  started_at: string | null;
+  listeners: MailListener[];
+  connections: number;
+  limits: Record<string, number | boolean>;
+  cache: MailCacheStats | null;
+}

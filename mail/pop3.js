@@ -1,5 +1,5 @@
 // POP3 pre-login front end: CAPA/USER/PASS/AUTH PLAIN, then backend login and splice.
-import { LineReader, decodePlain, routeLogin, splice } from "./common.js";
+import { LineReader, decodePlain, routeLogin, splice, MAX_PRELOGIN_COMMANDS } from "./common.js";
 
 const MAX_LOGIN_FAILS = 3;
 const MAX_BAD = 10;
@@ -30,8 +30,10 @@ export async function pop3Session(client, ip, ctx) {
   let user = null;
   let bad = 0;
   let fails = 0;
+  let cmds = 0;
 
   for (;;) {
+    if (++cmds > MAX_PRELOGIN_COMMANDS) return client.end();
     const line = await r.readLine();
     const sp = line.indexOf(" ");
     const cmd = (sp < 0 ? line : line.slice(0, sp)).toUpperCase();
@@ -55,27 +57,39 @@ export async function pop3Session(client, ip, ctx) {
         w("-ERR Already using TLS");
         break;
       case "USER":
-        if (!arg || /\s/.test(arg)) { w("-ERR Invalid user"); break; }
+        if (!arg || /\s/.test(arg)) { w("-ERR Invalid user"); if (++bad > MAX_BAD) return client.end(); break; }
         user = arg;
         w("+OK");
         break;
       case "PASS":
-        if (!user) { w("-ERR USER first"); break; }
+        if (!user) { w("-ERR USER first"); if (++bad > MAX_BAD) return client.end(); break; }
         creds = { user, pass: arg };
         user = null;
         break;
       case "AUTH": {
         if (!arg) { w("+OK"); w("PLAIN"); w("."); break; }
         const [mech, ir] = arg.split(" ");
-        if (mech.toUpperCase() !== "PLAIN") { w("-ERR Unsupported mechanism"); break; }
+        if (mech.toUpperCase() !== "PLAIN") {
+          w("-ERR Unsupported mechanism");
+          if (++bad > MAX_BAD) return client.end();
+          break;
+        }
         let resp = ir;
         if (resp === undefined) {
           client.write("+ \r\n");
           resp = await r.readLine();
         }
-        if (resp === "*") { w("-ERR Authentication cancelled"); break; }
+        if (resp === "*") {
+          w("-ERR Authentication cancelled");
+          if (++bad > MAX_BAD) return client.end();
+          break;
+        }
         const c = decodePlain(resp === "=" ? "" : resp);
-        if (!c) { w("-ERR Invalid SASL response"); break; }
+        if (!c) {
+          w("-ERR Invalid SASL response");
+          if (++bad > MAX_BAD) return client.end();
+          break;
+        }
         creds = c;
         break;
       }
