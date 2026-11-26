@@ -1,0 +1,60 @@
+# nfpm package definition. Build with packaging/build-deb.sh (it stages dist/deb-stage first).
+name: mam-portal
+arch: all
+platform: linux
+version: ${VERSION}
+version_schema: semver
+section: mail
+priority: optional
+maintainer: Afatyo <afatyo.ajeung@gmail.com>
+description: |
+  Webmail login portal and mail proxy for Carbonio and Zimbra.
+  One webmail login page and one IMAPS, POP3S and SMTPS hostname in front of
+  several mail servers; each login is routed to the server holding the account.
+vendor: MaM Portal
+homepage: https://github.com/afatyoo/MaM-Portal
+license: MIT
+
+depends:
+  - nodejs (>= 18.17)
+  - openssl
+  - adduser
+
+contents:
+  - src: dist/deb-stage/
+    dst: /usr/lib/mam-portal/
+    type: tree
+  - src: packaging/mam-portal.service
+    dst: /lib/systemd/system/mam-portal.service
+
+  # server.js resolves certs/ and data/ next to itself.
+  - src: /etc/mam-portal/certs
+    dst: /usr/lib/mam-portal/certs
+    type: symlink
+  - src: /var/lib/mam-portal
+    dst: /usr/lib/mam-portal/data
+    type: symlink
+
+  - src: config.sample.ini
+    dst: /usr/share/mam-portal/config.sample.ini
+  - src: deploy/selfsigned.sh
+    dst: /usr/share/mam-portal/selfsigned.sh
+    file_info: { mode: 0755 }
+  - src: deploy/localca.sh
+    dst: /usr/share/mam-portal/localca.sh
+    file_info: { mode: 0755 }
+  - src: README.adoc
+    dst: /usr/share/doc/mam-portal/README.adoc
+  - src: packaging/README.md
+    dst: /usr/share/doc/mam-portal/INSTALL.md
+  - src: docs/mail-proxy.md
+    dst: /usr/share/doc/mam-portal/mail-proxy.md
+  - src: CHANGELOG.md
+    dst: /usr/share/doc/mam-portal/CHANGELOG.md
+  - src: LICENSE
+    dst: /usr/share/doc/mam-portal/copyright
+
+scripts:
+  postinstall: packaging/scripts/postinst.sh
+  preremove: packaging/scripts/prerm.sh
+  postremove: packaging/scripts/postrm.sh

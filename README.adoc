@@ -83,6 +83,33 @@ image::MaM-Portal.png[]
 └── certs/
 ----
 
+== Install on Debian / Ubuntu (.deb)
+
+Build the package (needs Node.js, npm and https://nfpm.goreleaser.com/[nfpm]):
+
+[source,bash]
+----
+./packaging/build-deb.sh    # -> dist/mam-portal_<version>_all.deb
+----
+
+Install it on the server:
+
+[source,bash]
+----
+sudo apt install ./mam-portal_<version>_all.deb
+sudo vi /etc/mam-portal/config.ini
+sudo systemctl enable --now mam-portal
+sudo cat /etc/mam-portal/mam-portal.env    # first admin password
+----
+
+* Needs `nodejs` 18.17 or newer (installed as a dependency by `apt`)
+* Nothing is started by the package; the first admin password is random, not `admin`
+* Config and certificates live in `/etc/mam-portal/`, data and logs in `/var/lib/mam-portal/`
+* `apt remove` keeps them, `apt purge` deletes them
+* Certificates, paths and migrating from `deploy/install.sh`: `packaging/README.md`
+
+The Quick Start below is for running from a source checkout.
+
 == Quick Start
 
 === 1) Install dependencies

@@ -6,6 +6,15 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- Debian package (`packaging/build-deb.sh`): systemd service, config in
+  `/etc/mam-portal`, data in `/var/lib/mam-portal`, random first admin password.
+
+---
+
 ## [v1.1.0] — 2026-11-26
 
 One hostname for every mail protocol. MaM now proxies IMAPS, POP3S and SMTPS by
