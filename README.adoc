@@ -6,6 +6,9 @@ image::docs/assets/logo.png[MaM Portal logo,128]
 
 A lightweight portal to authenticate users against *Zimbra / Carbonio* using *SOAP* and redirect them to webmail with *Preauth*.
 It also includes a built-in *Admin Dashboard* to manage servers, domains, and admin users.
+Since *v1.1.0* it also proxies *IMAPS / POP3S / SMTPS* for the same accounts, so a mail client only ever needs one hostname. See `docs/mail-proxy.md`.
+
+*Current version:* **1.1.0**
 
 [.text-center]
 image::MaM-Portal.png[]
