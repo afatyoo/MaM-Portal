@@ -15,6 +15,8 @@ import { fileURLToPath } from "url";
 import { parseMailSection, parseServerMail } from "./mail/common.js";
 import { startMailProxy, mailStatus } from "./mail/index.js";
 import { createLoginLimiter, ensureFirstAdmin } from "./lib/security.js";
+import { appendJsonl, tailJsonl } from "./lib/jsonl-log.js";
+import { csrfGuard, resolveSessionSecret } from "./lib/web-guard.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -173,16 +175,6 @@ function readAdminDb(file) {
 }
 function writeAdminDb(file, db) { fs.writeFileSync(file, JSON.stringify(db, null, 2), "utf8"); }
 
-function appendJsonl(file, obj) { fs.appendFileSync(file, JSON.stringify(obj) + "\n", "utf8"); }
-
-function tailJsonl(file, limit=200) {
-  if (!fs.existsSync(file)) return [];
-  const text = fs.readFileSync(file, "utf8").trim();
-  if (!text) return [];
-  const lines = text.split("\n").filter(Boolean);
-  return lines.slice(-limit).map(l => { try { return JSON.parse(l);} catch { return null; } }).filter(Boolean).reverse();
-}
-
 function computeStats(entries) {
   const total = entries.length;
   const ok = entries.filter(e => e.result==="ok").length;
@@ -209,18 +201,23 @@ function computeStats(entries) {
   };
 }
 
+const SOAP_TIMEOUT_MS = Number(process.env.SOAP_TIMEOUT_MS || 15_000);
+const dispatchers = new Map(); // one TLS agent per CA setting, reused across requests
+
 function makeDispatcher({ caFile, insecureTls }) {
-  const connect = {};
-  if (caFile) {
-    const caPath = path.isAbsolute(caFile) ? caFile : path.join(__dirname, caFile);
-    connect.ca = fs.readFileSync(caPath);
-  }
-  if (insecureTls) {
+  if (!caFile && !insecureTls) return undefined;
+  const caPath = !caFile ? "" : path.isAbsolute(caFile) ? caFile : path.join(__dirname, caFile);
+  const key = `${caPath}|${caPath ? fs.statSync(caPath).mtimeMs : 0}|${!!insecureTls}`;
+  let agent = dispatchers.get(key);
+  if (!agent) {
+    const connect = {};
+    if (caPath) connect.ca = fs.readFileSync(caPath);
     // Per-request (lebih aman dibanding set env global)
-    connect.rejectUnauthorized = false;
+    if (insecureTls) connect.rejectUnauthorized = false;
+    agent = new Agent({ connect });
+    dispatchers.set(key, agent);
   }
-  if (Object.keys(connect).length === 0) return undefined;
-  return new Agent({ connect });
+  return agent;
 }
 
 async function soapAuth({ server, soapPath, account, password, caFile, insecureTls }) {
@@ -239,7 +236,8 @@ async function soapAuth({ server, soapPath, account, password, caFile, insecureT
     method: "POST",
     headers: { "Content-Type": 'application/soap+xml; charset="utf-8"', "Accept": "application/soap+xml, text/xml" },
     body,
-    dispatcher
+    dispatcher,
+    signal: AbortSignal.timeout(SOAP_TIMEOUT_MS)
   });
   const text = await res.text();
   const ok = res.ok && /<authToken>[^<]+<\/authToken>/i.test(text);
@@ -252,6 +250,7 @@ app.use(helmet({ contentSecurityPolicy: false }));
 app.use(cookieParser());
 app.use(express.json({ limit: "100kb" }));
 app.use(express.urlencoded({ extended: true }));
+app.use("/api/admin", csrfGuard);
 
 const FileStore = FileStoreFactory(session);
 const cfg0 = loadConfig();
@@ -268,7 +267,8 @@ let mailCtx = null;
 
 
 const HANDOFF_TTL_MS = Number(process.env.HANDOFF_TTL_MS || 60_000);
-const HANDOFF_STORE = new Map(); // token -> { actionUrl, fields, expiresAt }
+const HANDOFF_COOKIE = "mam_handoff";
+const HANDOFF_STORE = new Map(); // token -> { nonce, actionUrl, fields, expiresAt }
 
 setInterval(() => {
   const now = Date.now();
@@ -279,7 +279,7 @@ setInterval(() => {
 
 app.use(session({
   store: new FileStore({ path: path.join(DATA_DIR, "sessions") }),
-  secret: cfg0.adminSessionSecret,
+  secret: resolveSessionSecret(cfg0.adminSessionSecret, DATA_DIR),
   resave: false,
   saveUninitialized: false,
   cookie: { httpOnly: true, sameSite: "lax", secure: cfg0.httpsEnabled ? true : "auto", maxAge: 8*60*60*1000 }
@@ -294,7 +294,7 @@ app.get("/login", (req, res) => res.redirect("/"));
 app.get(cfg0.adminBasePath, (req, res) => res.redirect(cfg0.adminBasePath + "/"));
 
 app.get("/api/health", (req,res)=>res.json({status:"ok", timestamp:new Date().toISOString()}));
-app.get("/api/servers", (req,res)=>{
+app.get("/api/servers", requireAdmin, (req,res)=>{
   const {servers} = loadConfig();
   res.json({ servers: servers.map(s=>({key:s.key,name:s.name,server:s.server,domains:s.domains}))});
 });
@@ -376,12 +376,16 @@ app.post("/api/login", async (req,res)=>{
         const by="name";
         const preauth = computePreauth({account:email,by,expires,timestamp:ts}, s.preauthkey);
 
-        // Jangan pernah kirim preauth ke frontend. Kita simpan di server sebagai handoff token (1x pakai),
-        // lalu frontend hanya diarahkan ke /handoff/<token>.
+        // Preauth tidak dikirim ke JavaScript frontend: disimpan sebagai handoff token (1x pakai).
+        // Saat dipakai, browser di-redirect ke backend dengan preauth di query string.
         const actionUrl = `${s.server}${s.preauthPath}`;
         const token = crypto.randomBytes(24).toString("hex");
+        // Only the browser that logged in may use the link.
+        const nonce = crypto.randomBytes(24).toString("hex");
+        res.cookie(HANDOFF_COOKIE, nonce, { httpOnly: true, sameSite: "lax", secure: req.secure, path: "/handoff", maxAge: HANDOFF_TTL_MS });
 
         HANDOFF_STORE.set(token, {
+          nonce,
           actionUrl,
           fields: { account: email, by, expires, timestamp: ts, preauth },
           expiresAt: Date.now() + HANDOFF_TTL_MS,
@@ -408,8 +412,8 @@ app.post("/api/login", async (req,res)=>{
   }
 });
 
-// Handoff: render halaman HTML yang auto-submit POST ke /service/preauth
-// Ini memastikan preauth tidak muncul di URL querystring dan tidak terkirim ke frontend.
+// Handoff: redirect sekali pakai ke /service/preauth di backend. Zimbra menerima preauth
+// lewat query string, jadi nilainya bisa muncul di access log backend.
 app.get("/handoff/:token", (req, res) => {
   const token = String(req.params.token || "").trim();
   const entry = HANDOFF_STORE.get(token);
@@ -419,7 +423,12 @@ app.get("/handoff/:token", (req, res) => {
     return res.status(410).send("Handoff expired. Please login again.");
   }
 
+  if (req.cookies?.[HANDOFF_COOKIE] !== entry.nonce) {
+    return res.status(403).send("Handoff tidak cocok dengan browser ini. Silakan login lagi.");
+  }
+
   HANDOFF_STORE.delete(token); // one-time use
+  res.clearCookie(HANDOFF_COOKIE, { path: "/handoff" });
 
   const { actionUrl, fields } = entry;
 
@@ -464,8 +473,15 @@ app.delete("/api/admin/users/:username", requireAdmin, (req,res)=>{
 
 
 
+// A session only stays valid while its admin account still exists.
+function currentAdmin(req){
+  const name = req.session?.admin?.username;
+  if(!name) return "";
+  return readAdminDb(ADMIN_FILE).users.some(u=>u.username===name) ? name : "";
+}
+
 function requireAdmin(req,res,next){
-  if(req.session?.admin?.username) return next();
+  if(currentAdmin(req)) return next();
   return res.status(401).json({error:"Unauthorized"});
 }
 
@@ -537,6 +553,7 @@ async function quickSoapTest(serverCfg){
   const resp = await fetch(url, {
     method: "POST",
     dispatcher,
+    signal: AbortSignal.timeout(SOAP_TIMEOUT_MS),
     headers: {
       "Content-Type": "application/soap+xml; charset=utf-8"
     },
@@ -561,6 +578,8 @@ app.post("/api/admin/login", async (req,res)=>{
       return res.status(401).json({error:"Login admin gagal"});
     }
     attempt.success();
+    // New session id after login, so a planted one is useless.
+    await new Promise((resolve, reject) => req.session.regenerate((e) => (e ? reject(e) : resolve())));
     req.session.admin = { username };
     return res.json({ok:true});
   }catch(e){
@@ -576,8 +595,9 @@ app.post("/api/admin/logout", (req,res)=>{
 });
 
 app.get("/api/admin/me", (req,res)=>{
-  if(!req.session?.admin?.username) return res.json({loggedIn:false});
-  return res.json({loggedIn:true, username:req.session.admin.username});
+  const username = currentAdmin(req);
+  if(!username) return res.json({loggedIn:false});
+  return res.json({loggedIn:true, username});
 });
 
 // --- Admin: manage Zimbra servers (writes to config.ini) ---

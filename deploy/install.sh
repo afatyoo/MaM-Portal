@@ -43,6 +43,12 @@ install_node_tarball() {
     tmp="$(mktemp -d)"
     curl -fsSL --connect-timeout 15 --max-time 300 -o "${tmp}/node.tar.xz" \
         "https://nodejs.org/dist/v${ver}/node-v${ver}-${arch}.tar.xz" || die "node download failed"
+    curl -fsSL --connect-timeout 15 --max-time 60 -o "${tmp}/SHASUMS256.txt" \
+        "https://nodejs.org/dist/v${ver}/SHASUMS256.txt" || die "node checksum download failed"
+    local want got
+    want="$(awk -v f="node-v${ver}-${arch}.tar.xz" '$2 == f { print $1 }' "${tmp}/SHASUMS256.txt")"
+    got="$(sha256sum "${tmp}/node.tar.xz" | awk '{ print $1 }')"
+    [ -n "${want}" ] && [ "${want}" = "${got}" ] || die "node tarball checksum mismatch"
     rm -rf /usr/local/node
     tar -xJf "${tmp}/node.tar.xz" -C /usr/local
     mv "/usr/local/node-v${ver}-${arch}" /usr/local/node

@@ -6,6 +6,22 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [Unreleased]
+
+### Security
+
+- Admin API rejects cross-origin and form-encoded state changes.
+- The login log clips long fields, rotates at 10 MB (3 old files) and is read from the end.
+- Admin sessions are regenerated at login and end when the account is deleted.
+- Webmail handoff links work only in the browser that logged in.
+- `/api/servers` now requires an admin session.
+- SOAP requests time out; TLS agents are reused.
+- A placeholder `session_secret` is replaced by a generated one.
+- Package scripts no longer follow links in service-writable directories;
+  `deploy/install.sh` verifies the Node tarball checksum.
+
+---
+
 ## [v1.2.1] — 2026-11-27
 
 Security release.
