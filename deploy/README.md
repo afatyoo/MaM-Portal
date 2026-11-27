@@ -157,6 +157,9 @@ A successful login on a domain that exists on two backends first shows
 `"cache":"miss"` with two entries in `attempted`, then `"cache":"hit"` with one on
 the next login.
 
-Set a real admin password before exposing the portal: the first start creates
-`admin`/`admin`. Rewrite the hash in `/opt/mam-portal/data/admin_users.json` (bcrypt)
-or delete the file and start with `DEFAULT_ADMIN_USER` / `DEFAULT_ADMIN_PASS` set.
+The first start with no admin creates `admin` with `DEFAULT_ADMIN_PASS`, or with a
+random password in `/opt/mam-portal/data/initial-admin-password`. Installs made with
+older versions may still use `admin`/`admin`: the server warns at start; change it.
+
+The sample config serves the web on `127.0.0.1` only. Put a TLS reverse proxy in front
+(and set `trust_proxy`), or enable `https_enabled` and clear `bind_host`.

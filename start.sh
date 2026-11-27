@@ -9,7 +9,7 @@ set -Eeuo pipefail
 # - Install Node.js + npm if missing
 # - Run npm install
 # - Run npm run build
-# - Run npm run create-admin with default admin/admin
+# - Create an admin only when ADMIN_PASS is set (otherwise the server generates one)
 # - Start app in foreground or background
 # - Manage app with start / stop / restart / status / bootstrap / help
 # - Skip bootstrap on next start if app is already prepared
@@ -21,7 +21,7 @@ set -Eeuo pipefail
 # =========================================================
 
 ADMIN_USER="${ADMIN_USER:-admin}"
-ADMIN_PASS="${ADMIN_PASS:-admin}"
+ADMIN_PASS="${ADMIN_PASS:-}"
 PROJECT_DIR="${PROJECT_DIR:-$(pwd)}"
 APP_MATCH="${APP_MATCH:-node server.js}"
 
@@ -95,8 +95,8 @@ Environment variables:
   ADMIN_USER     Default admin username
                  Default: admin
 
-  ADMIN_PASS     Default admin password
-                 Default: admin
+  ADMIN_PASS     Admin password
+                 Default: empty (random, written to data/initial-admin-password)
 
   PROJECT_DIR    Project directory
                  Default: current working directory
@@ -370,10 +370,15 @@ run_build() {
 }
 
 create_admin_user() {
+  if [[ -z "${ADMIN_PASS}" ]]; then
+    log "ADMIN_PASS not set: the server creates the first admin with a random password."
+    log "Read it after the first start: ${PROJECT_DIR}/data/initial-admin-password"
+    return 0
+  fi
+
   if npm run | grep -q "create-admin"; then
-    log "Creating default admin user..."
+    log "Creating admin user..."
     log "Username: ${ADMIN_USER}"
-    log "Password: ${ADMIN_PASS}"
 
     set +e
     printf "%s\n%s\n%s\n%s\n" \
@@ -389,13 +394,6 @@ create_admin_user() {
       warn "This may happen if the admin user already exists or the prompt flow is different."
     fi
 
-    echo
-    echo "=========================================="
-    echo "Default admin credentials:"
-    echo "Username: ${ADMIN_USER}"
-    echo "Password: ${ADMIN_PASS}"
-    echo "=========================================="
-    echo
   else
     warn "npm script 'create-admin' was not found in package.json. Skipping admin creation."
   fi

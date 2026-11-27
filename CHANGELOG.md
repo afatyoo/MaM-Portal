@@ -6,6 +6,19 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [Unreleased]
+
+### Security
+
+- Webmail and admin logins are rate limited per IP and per IP + account (`429`).
+- No more built-in admin password: the first admin is created only when there is none,
+  with `DEFAULT_ADMIN_PASS` or a random password in `data/initial-admin-password`.
+  A deleted admin is no longer recreated.
+- New `[WEB] bind_host` and `trust_proxy`. The sample config serves the web on
+  `127.0.0.1`; the server warns when plain HTTP is reachable from the network.
+
+---
+
 ## [v1.2.0] — 2026-11-26
 
 Install MaM Portal from a Debian package.

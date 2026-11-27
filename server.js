@@ -14,6 +14,7 @@ import https from "https";
 import { fileURLToPath } from "url";
 import { parseMailSection, parseServerMail } from "./mail/common.js";
 import { startMailProxy, mailStatus } from "./mail/index.js";
+import { createLoginLimiter, ensureFirstAdmin } from "./lib/security.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -24,7 +25,7 @@ const ADMIN_FILE = process.env.ADMIN_FILE || path.join(DATA_DIR, "admin_users.js
 
 // Default admin (untuk dev). Bisa dioverride via ENV.
 const DEFAULT_ADMIN_USER = process.env.DEFAULT_ADMIN_USER || "admin";
-const DEFAULT_ADMIN_PASS = process.env.DEFAULT_ADMIN_PASS || "admin";
+const DEFAULT_ADMIN_PASS = process.env.DEFAULT_ADMIN_PASS || "";
 
 function ensureDataFiles() {
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -35,16 +36,26 @@ ensureDataFiles();
 
 async function ensureDefaultAdminExists() {
   const db = readAdminDb(ADMIN_FILE);
-  if (db.users.some(u => u.username === DEFAULT_ADMIN_USER)) return;
-
-  db.users.push({
+  const created = await ensureFirstAdmin({
+    db,
     username: DEFAULT_ADMIN_USER,
-    password_hash: await bcrypt.hash(String(DEFAULT_ADMIN_PASS), 12),
-    created_at: new Date().toISOString()
+    password: DEFAULT_ADMIN_PASS,
+    dataDir: DATA_DIR,
+    hash: (p) => bcrypt.hash(p, 12),
   });
-  writeAdminDb(ADMIN_FILE, db);
-  console.log("⚠️  Default admin ensured:", DEFAULT_ADMIN_USER, "/", DEFAULT_ADMIN_PASS);
-  console.log("    (Set env DEFAULT_ADMIN_USER/DEFAULT_ADMIN_PASS untuk ganti, terutama jika production)");
+  if (created) {
+    writeAdminDb(ADMIN_FILE, db);
+    console.log(created.generated
+      ? `Admin "${created.username}" dibuat. Password awal ada di ${created.passwordFile} (hapus setelah diganti).`
+      : `Admin "${created.username}" dibuat dengan password dari DEFAULT_ADMIN_PASS.`);
+    return;
+  }
+  // Older installs may still carry the former built-in password.
+  for (const u of db.users) {
+    if (await bcrypt.compare("admin", u.password_hash || "")) {
+      console.warn(`⚠️  Admin "${u.username}" masih memakai password "admin". Ganti sekarang.`);
+    }
+  }
 }
 
 function getConfigPath() {
@@ -79,6 +90,15 @@ function loadConfig() {
   const tlsKeyFile = process.env.TLS_KEY_FILE || web.tls_key_file || path.join(__dirname, "certs/server.key");
   const tlsCertFile = process.env.TLS_CERT_FILE || web.tls_cert_file || path.join(__dirname, "certs/server.crt");
 
+  const bindHost = String(process.env.BIND_HOST || web.bind_host || "").trim();
+  const trustProxy = String(web.trust_proxy ?? "").trim();
+  const numberOr = (v, d) => (v !== undefined && v !== "" && Number.isFinite(Number(v)) ? Number(v) : d);
+  const loginLimits = {
+    perIp: numberOr(web.login_fail_per_ip, 20),
+    perAccount: numberOr(web.login_fail_per_user, 5),
+    windowSec: numberOr(web.login_fail_window_sec, 600),
+  };
+
   const admin = cfg.ADMIN || {};
   const adminSessionSecret = process.env.ADMIN_SESSION_SECRET || admin.session_secret || "CHANGE_ME_SESSION_SECRET";
   const adminBasePath = (admin.base_path || "/admin").trim().replace(/\/+$/, "") || "/admin";
@@ -105,7 +125,7 @@ function loadConfig() {
 
   const mail = parseMailSection(cfg);
 
-  return { defaultDomain, servers, httpsEnabled, httpPort, httpsPort, tlsKeyFile, tlsCertFile, adminSessionSecret, adminBasePath, mail };
+  return { bindHost, trustProxy, loginLimits, defaultDomain, servers, httpsEnabled, httpPort, httpsPort, tlsKeyFile, tlsCertFile, adminSessionSecret, adminBasePath, mail };
 }
 
 function parseDomains(domainsStr) {
@@ -235,6 +255,15 @@ app.use(express.urlencoded({ extended: true }));
 
 const FileStore = FileStoreFactory(session);
 const cfg0 = loadConfig();
+// Behind a reverse proxy every client would otherwise share the proxy's address.
+// A number is a hop count; anything else is an Express "trust proxy" value such as "loopback".
+if (cfg0.trustProxy && cfg0.trustProxy !== "false") {
+  app.set("trust proxy", /^\d+$/.test(cfg0.trustProxy) ? Number(cfg0.trustProxy) : cfg0.trustProxy);
+}
+const webLimiter = createLoginLimiter(cfg0.loginLimits);
+const adminLimiter = createLoginLimiter(cfg0.loginLimits);
+setInterval(() => { webLimiter.sweep(); adminLimiter.sweep(); }, 60_000).unref?.();
+const tooMany = (res) => res.status(429).json({ error: "Terlalu banyak percobaan login. Coba lagi nanti." });
 let mailCtx = null;
 
 
@@ -253,7 +282,7 @@ app.use(session({
   secret: cfg0.adminSessionSecret,
   resave: false,
   saveUninitialized: false,
-  cookie: { httpOnly: true, sameSite: "lax", secure: cfg0.httpsEnabled, maxAge: 8*60*60*1000 }
+  cookie: { httpOnly: true, sameSite: "lax", secure: cfg0.httpsEnabled ? true : "auto", maxAge: 8*60*60*1000 }
 }));
 
 app.use("/", express.static(path.join(__dirname, "public"), { extensions: ["html"] }));
@@ -282,6 +311,7 @@ app.post("/api/login", async (req,res)=>{
   const logOk = (payload) => appendJsonl(LOG_FILE, { ...base, ...payload, result: "ok", ms: Date.now() - started });
   const logFail = (payload) => appendJsonl(LOG_FILE, { ...base, ...payload, result: "fail", ms: Date.now() - started });
 
+  let attempt = null;
   try{
     const {defaultDomain, servers} = loadConfig();
     const username = req.body.username ?? req.body.email ?? "";
@@ -316,7 +346,14 @@ app.post("/api/login", async (req,res)=>{
       return res.status(400).json({error:`Domain ${domain} belum dipetakan ke Server manapun`});
     }
 
+    attempt = webLimiter.begin(req.ip, email);
+    if(!attempt){
+      logFail({ email, domain, server_key: "", reason: "rate_limited" });
+      return tooMany(res);
+    }
+
     const attempted = [];
+    let rejected = false;
     let lastErr = "";
 
     for(const s of candidates){
@@ -331,7 +368,9 @@ app.post("/api/login", async (req,res)=>{
         continue;
       }
 
+      if(!auth.ok) rejected = true;
       if(auth.ok){
+        attempt.success();
         const ts = Date.now().toString();
         const expires = "0";
         const by="name";
@@ -355,6 +394,8 @@ app.post("/api/login", async (req,res)=>{
       }
     }
 
+    // Only a backend that answered counts: an outage must not lock users out.
+    if(rejected) attempt.fail();
     logFail({ email, domain, server_key: candidates[0]?.key || "unknown", attempted, reason: "auth_failed", error: lastErr });
     return res.status(401).json({error:"Login gagal (user/pass salah atau server tidak bisa diakses)"});
   }catch(e){
@@ -362,6 +403,8 @@ app.post("/api/login", async (req,res)=>{
     logFail({ email: req.body?.username || "", domain: "", server_key: "", reason: "internal_error", error: msg });
     console.error(e);
     return res.status(500).json({error:"Internal error"});
+  } finally {
+    attempt?.release();
   }
 });
 
@@ -507,13 +550,25 @@ async function quickSoapTest(serverCfg){
 app.post("/api/admin/login", async (req,res)=>{
   const {username, password} = req.body || {};
   if(!username || !password) return res.status(400).json({error:"username/password wajib diisi"});
-  const db = readAdminDb(ADMIN_FILE);
-  const u = db.users.find(x=>x.username===username);
-  if(!u) return res.status(401).json({error:"Login admin gagal"});
-  const ok = await bcrypt.compare(String(password), u.password_hash);
-  if(!ok) return res.status(401).json({error:"Login admin gagal"});
-  req.session.admin = { username };
-  return res.json({ok:true});
+  const attempt = adminLimiter.begin(req.ip, String(username));
+  if(!attempt) return tooMany(res);
+  try{
+    const db = readAdminDb(ADMIN_FILE);
+    const u = db.users.find(x=>x.username===username);
+    const ok = !!u && await bcrypt.compare(String(password), u.password_hash);
+    if(!ok){
+      attempt.fail();
+      return res.status(401).json({error:"Login admin gagal"});
+    }
+    attempt.success();
+    req.session.admin = { username };
+    return res.json({ok:true});
+  }catch(e){
+    console.error(e);
+    return res.status(500).json({error:"Internal error"});
+  }finally{
+    attempt.release();
+  }
 });
 
 app.post("/api/admin/logout", (req,res)=>{
@@ -690,6 +745,7 @@ app.get(`${cfg0.adminBasePath}/*`, (req,res)=>{
 async function start(){
   await ensureDefaultAdminExists();
   const cfg = loadConfig();
+  const host = cfg.bindHost || undefined;
   if(cfg.httpsEnabled){
     const redirectApp = express();
     redirectApp.use((req,res)=>{
@@ -697,13 +753,17 @@ async function start(){
       res.redirect(301, `https://${host}:${cfg.httpsPort}${req.originalUrl}`);
     });
 
-    http.createServer(redirectApp).listen(cfg.httpPort, ()=>console.log(`HTTP redirect on http://localhost:${cfg.httpPort} -> HTTPS`));
+    http.createServer(redirectApp).listen(cfg.httpPort, host, ()=>console.log(`HTTP redirect on http://localhost:${cfg.httpPort} -> HTTPS`));
 
     const key = fs.readFileSync(cfg.tlsKeyFile);
     const cert = fs.readFileSync(cfg.tlsCertFile);
-    https.createServer({key, cert}, app).listen(cfg.httpsPort, ()=>console.log(`MaM Portal (HTTPS) running on https://localhost:${cfg.httpsPort}`));
+    https.createServer({key, cert}, app).listen(cfg.httpsPort, host, ()=>console.log(`MaM Portal (HTTPS) running on https://localhost:${cfg.httpsPort}`));
   } else {
-    http.createServer(app).listen(cfg.httpPort, ()=>console.log(`MaM Portal running on http://localhost:${cfg.httpPort}`));
+    if (!["127.0.0.1", "::1", "localhost"].includes(cfg.bindHost)) {
+      console.warn("⚠️  Web berjalan HTTP tanpa enkripsi dan bisa diakses dari jaringan: password lewat polos.");
+      console.warn("    Aktifkan https_enabled, atau set [WEB] bind_host = 127.0.0.1 dan pakai reverse proxy TLS.");
+    }
+    http.createServer(app).listen(cfg.httpPort, host, ()=>console.log(`MaM Portal running on http://localhost:${cfg.httpPort}`));
   }
 
   try {

@@ -42,6 +42,7 @@ elif [ "$1" = "configure" ]; then
 MaM Portal is installed but not started.
   1. edit /etc/mam-portal/config.ini
   2. systemctl enable --now mam-portal
+  The web portal listens on 127.0.0.1:8080 until you change [WEB] in the config.
   The first admin password is in /etc/mam-portal/mam-portal.env (root only).
 Details: /usr/share/doc/mam-portal/INSTALL.md
 

@@ -162,13 +162,15 @@ On later runs, it will:
 * Start the application directly without re-running install/build/admin creation
 * Only re-run bootstrap if explicitly requested
 
-=== Default admin credentials
-By default, the helper script creates:
+=== First admin
+There is no built-in password. On the first start without any admin, the server creates
+`admin` with `DEFAULT_ADMIN_PASS`, or with a random password written to
+`data/initial-admin-password`. Change it, then delete that file.
 
-* Username: `admin`
-* Password: `admin`
-
-You should change this immediately after first use in a real environment.
+=== Web access and login limits
+* The sample config binds the web to `127.0.0.1`: put a TLS reverse proxy in front, or enable `https_enabled` and clear `bind_host`
+* Behind a reverse proxy set `[WEB] trust_proxy` (`loopback` or a hop count), otherwise all users share one IP for the limits
+* Failed logins are limited per IP and per IP + account (`login_fail_per_ip`, `login_fail_per_user`, `login_fail_window_sec`)
 
 === Make script executable
 [source,bash]

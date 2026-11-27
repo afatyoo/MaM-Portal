@@ -13,6 +13,11 @@ sudo cat /etc/mam-portal/mam-portal.env   # first admin password
 
 Needs `nodejs` 18.17 or newer. The service is not started by the package.
 
+The web portal listens on `127.0.0.1:8080` on a new install. Put a TLS reverse proxy
+in front and set `trust_proxy = loopback`, or enable `https_enabled` and clear
+`bind_host`. Existing configs are not changed on upgrade; the server warns when the
+web is reachable over plain HTTP.
+
 | Path | Content |
 |---|---|
 | `/etc/mam-portal/config.ini` | configuration (also written by the admin UI) |

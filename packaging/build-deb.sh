@@ -13,8 +13,8 @@ npm run build >/dev/null          # admin UI -> public/admin
 
 rm -rf "${STAGE}"
 mkdir -p "${STAGE}"
-cp -R server.js mail tools public "${STAGE}/"
-rm -f "${STAGE}"/mail/*.test.js
+cp -R server.js lib mail tools public "${STAGE}/"
+rm -f "${STAGE}"/mail/*.test.js "${STAGE}"/lib/*.test.js
 
 # package.json also lists the admin UI libraries; ship only what server.js imports,
 # at the versions the lockfile resolved.
