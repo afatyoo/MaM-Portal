@@ -6,7 +6,12 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [Unreleased]
+## [v1.2.1] — 2026-11-27
+
+Security release.
+
+**Upgrade note:** new installs serve the web portal on `127.0.0.1` only. Existing
+configs are not changed.
 
 ### Security
 
