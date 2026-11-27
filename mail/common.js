@@ -5,6 +5,10 @@ import net from "net";
 import fs from "fs";
 import path from "path";
 import { RouteCache } from "./route-cache.js";
+import { FailLimiter } from "../lib/fail-limiter.js";
+import { createLoginLimiter } from "../lib/security.js";
+
+export { FailLimiter };
 
 export class ProtoError extends Error {}
 
@@ -83,32 +87,6 @@ export function cleanIp(a) {
   return String(a || "").replace(/^::ffff:/i, "");
 }
 
-/**
- * Sliding-window failure counter (per IP or per user). `maxKeys` keeps a spray of
- * random addresses or usernames from growing the map without bound.
- */
-export class FailLimiter {
-  constructor(limit, windowMs, maxKeys = 0) {
-    this.limit = limit;
-    this.windowMs = windowMs;
-    this.maxKeys = maxKeys > 0 ? maxKeys : 0;
-    this.m = new Map();
-  }
-  _get(key, now) {
-    const a = (this.m.get(key) || []).filter((t) => now - t < this.windowMs);
-    if (a.length) this.m.set(key, a); else this.m.delete(key);
-    return a;
-  }
-  _evict() {
-    while (this.maxKeys && this.m.size > this.maxKeys) this.m.delete(this.m.keys().next().value);
-  }
-  blocked(key, now = Date.now()) { return this.limit > 0 && this._get(key, now).length >= this.limit; }
-  fail(key, now = Date.now()) { const a = this._get(key, now); a.push(now); this.m.set(key, a); this._evict(); }
-  reset(key) { this.m.delete(key); }
-  sweep(now = Date.now()) { for (const k of [...this.m.keys()]) this._get(k, now); }
-  get size() { return this.m.size; }
-}
-
 /** Concurrent connection limits (per IP and total). */
 export class ConnLimiter {
   constructor(perIp, maxTotal) { this.perIp = perIp; this.maxTotal = maxTotal; this.m = new Map(); this.total = 0; }
@@ -163,6 +141,8 @@ export function parseMailSection(cfg) {
     handshakeTimeoutSec: toNum(m.handshake_timeout_sec, 30),
     authFailPerIp: toNum(m.auth_fail_per_ip, 10),
     authFailPerUser: toNum(m.auth_fail_per_user, 5),
+    authFailPerUserGlobal: toNum(m.auth_fail_per_user_global, 50),
+    preloginMaxSec: toNum(m.prelogin_max_sec, 180),
     authFailWindowSec: toNum(m.auth_fail_window_sec, 600),
     failLimiterMaxKeys: toNum(m.fail_limiter_max_keys, 20000),
     routeCacheEnabled: toBool(m.route_cache_enabled, true),
@@ -230,7 +210,6 @@ const randomDelay = () => new Promise((r) => setTimeout(r, 1000 + Math.floor(Mat
  */
 export function makeContext(deps) {
   const m = deps.getConfig().mail;
-  const windowMs = m.authFailWindowSec * 1000;
   const ctx = {
     ...deps,
     hostname: m.hostname,
@@ -240,8 +219,14 @@ export function makeContext(deps) {
     backendMs: m.backendTimeoutSec * 1000,
     maxLine: 8192,
     conns: new ConnLimiter(m.maxConnPerIp, m.maxConnTotal),
-    ipFail: new FailLimiter(m.authFailPerIp, windowMs, m.failLimiterMaxKeys),
-    userFail: new FailLimiter(m.authFailPerUser, windowMs, m.failLimiterMaxKeys),
+    preloginMaxMs: m.preloginMaxSec * 1000,
+    limiter: createLoginLimiter({
+      perIp: m.authFailPerIp,
+      perAccount: m.authFailPerUser,
+      perAccountTotal: m.authFailPerUserGlobal,
+      windowSec: m.authFailWindowSec,
+      maxKeys: m.failLimiterMaxKeys,
+    }),
     delay: deps.delay || randomDelay,
   };
   if (m.routeCacheEnabled) {
@@ -277,64 +262,69 @@ export async function routeLogin({ ctx, proto, ip, user, password, login }) {
   const domain = email.split("@")[1] || "";
   const base = { timestamp: new Date().toISOString(), method: proto, proto, ip, email, domain };
   const record = (result, extra) => ctx.log({ ...base, ...extra, result, ms: Date.now() - started });
+  let attempt = null;
   const reject = async (reason, extra = {}, count = true) => {
-    if (count) {
-      ctx.ipFail.fail(ip);
-      if (email) ctx.userFail.fail(email);
-    }
+    if (count) attempt?.fail(); else attempt?.release();
     await ctx.delay();
     record("fail", { server_key: "", ...extra, reason });
     return null;
   };
 
-  if (ctx.ipFail.blocked(ip) || (email && ctx.userFail.blocked(email))) return reject("rate_limited", {}, false);
+  // Reserved before talking to any backend, so parallel attempts count too.
+  attempt = ctx.limiter.begin(ip, email);
+  if (!attempt) return reject("rate_limited", {}, false);
   if (!EMAIL_RE.test(email) || !password || /[\r\n\0]/.test(password)) return reject("invalid_credentials");
 
-  const candidates = ctx.findCandidates(cfg.servers, domain);
-  if (!candidates.length) return reject("domain_unmapped");
+  try {
+    const candidates = ctx.findCandidates(cfg.servers, domain);
+    if (!candidates.length) return reject("domain_unmapped");
 
-  // A domain on several servers is the slow case, so try the server that accepted
-  // this address last first. A stale entry only costs one extra attempt, and the
-  // new answer is cached right after a successful login.
-  const cached = ctx.cache && candidates.length > 1 ? ctx.cache.get(email) : null;
-  const ordered = cached
-    ? [...candidates.filter((s) => s.key === cached), ...candidates.filter((s) => s.key !== cached)]
-    : candidates;
+    // A domain on several servers is the slow case, so try the server that accepted
+    // this address last first. A stale entry only costs one extra attempt, and the
+    // new answer is cached right after a successful login.
+    const cached = ctx.cache && candidates.length > 1 ? ctx.cache.get(email) : null;
+    const ordered = cached
+      ? [...candidates.filter((s) => s.key === cached), ...candidates.filter((s) => s.key !== cached)]
+      : candidates;
 
-  const attempted = [];
-  let rejectedByBackend = false;
-  for (const s of ordered) {
-    attempted.push(s.key);
-    let sock;
-    try {
-      sock = await ctx.connectBackend(s, proto);
-    } catch (e) {
-      record("fail", { server_key: s.key, reason: "backend_error", error: String(e?.message || e).slice(0, 200) });
-      continue;
-    }
-    try {
-      const r = await login(sock, s, email);
-      if (r.ok) {
-        ctx.userFail.reset(email);
-        if (ctx.cache && candidates.length > 1) ctx.cache.set(email, s.key);
-        record("ok", { server_key: s.key, attempted, cache: cached === s.key ? "hit" : cached ? "stale" : "miss" });
-        return { sock, reader: r.reader, server: s, reply: r.reply };
+    const attempted = [];
+    let rejectedByBackend = false;
+    for (const s of ordered) {
+      attempted.push(s.key);
+      let sock;
+      try {
+        sock = await ctx.connectBackend(s, proto);
+      } catch (e) {
+        record("fail", { server_key: s.key, reason: "backend_error", error: String(e?.message || e).slice(0, 200) });
+        continue;
       }
-      rejectedByBackend = true;
-      sock.destroy();
-    } catch (e) {
-      sock.destroy();
-      record("fail", { server_key: s.key, reason: "backend_error", error: String(e?.message || e).slice(0, 200) });
+      try {
+        const r = await login(sock, s, email);
+        if (r.ok) {
+          attempt.success();
+          if (ctx.cache && candidates.length > 1) ctx.cache.set(email, s.key);
+          record("ok", { server_key: s.key, attempted, cache: cached === s.key ? "hit" : cached ? "stale" : "miss" });
+          return { sock, reader: r.reader, server: s, reply: r.reply };
+        }
+        rejectedByBackend = true;
+        sock.destroy();
+      } catch (e) {
+        sock.destroy();
+        record("fail", { server_key: s.key, reason: "backend_error", error: String(e?.message || e).slice(0, 200) });
+      }
     }
+    if (!rejectedByBackend) return reject("backend_unavailable", { attempted }, false);
+    return reject("auth_failed", { server_key: attempted.at(-1), attempted });
+  } finally {
+    attempt.release();
   }
-  if (!rejectedByBackend) return reject("backend_unavailable", { attempted }, false);
-  return reject("auth_failed", { server_key: attempted.at(-1), attempted });
 }
 
 /** After login: hand both sockets over to a raw bidirectional pipe. */
 export function splice(ctx, client, clientReader, backend, backendReader) {
   const cRest = clientReader.detach();
   const bRest = backendReader.detach();
+  clearTimeout(client.preloginDeadline);
   backend.setTimeout(0);
   client.setTimeout(ctx.idleMs, () => client.destroy());
   if (bRest.length) client.write(bRest);
@@ -356,6 +346,11 @@ export function handleConnection(sock, handler, ctx) {
   let released = false;
   sock.on("close", () => { if (!released) { released = true; ctx.conns.release(ip); } });
   sock.setTimeout(ctx.preloginMs, () => sock.destroy());
+  // The socket timeout only measures silence; this one bounds the whole pre-login phase.
+  if (ctx.preloginMaxMs > 0) {
+    sock.preloginDeadline = setTimeout(() => sock.destroy(), ctx.preloginMaxMs);
+    sock.once("close", () => clearTimeout(sock.preloginDeadline));
+  }
   Promise.resolve()
     .then(() => handler(sock, ip, ctx))
     .catch(() => sock.destroy());
