@@ -208,6 +208,29 @@ describe("helpers", () => {
   });
 });
 
+// ---- limits ---------------------------------------------------------------
+describe("mail login limits", () => {
+  it("does not let one address lock another out, and caps parallel guesses", async () => {
+    await setup(imapSession, fakeImap);
+    const first = Array.from({ length: 3 }, () => ctx.limiter.begin("10.0.0.1", "alice@a.com"));
+    expect(first.every(Boolean)).toBe(true);
+    expect(ctx.limiter.begin("10.0.0.1", "alice@a.com")).toBeNull();
+    expect(ctx.limiter.begin("10.0.0.2", "alice@a.com")).not.toBeNull();
+  });
+
+  it("closes a connection that stays busy past the pre-login deadline", async () => {
+    const port = await setup(imapSession, fakeImap);
+    ctx.preloginMaxMs = 150;
+    const c = net.connect(port, "127.0.0.1");
+    c.on("error", () => {});
+    const closed = new Promise((r) => c.on("close", r));
+    const chatter = setInterval(() => c.write("a NOOP\r\n"), 20);
+    c.resume();
+    await closed;
+    clearInterval(chatter);
+  });
+});
+
 // ---- IMAP -----------------------------------------------------------------
 describe("IMAP proxy", () => {
   let port;

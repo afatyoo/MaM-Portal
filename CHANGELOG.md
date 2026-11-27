@@ -16,6 +16,10 @@ This project adheres to [Semantic Versioning](https://semver.org/).
   A deleted admin is no longer recreated.
 - New `[WEB] bind_host` and `trust_proxy`. The sample config serves the web on
   `127.0.0.1`; the server warns when plain HTTP is reachable from the network.
+- Mail login limits count in-flight attempts and are per IP and per IP + account,
+  with a looser per-account ceiling (`auth_fail_per_user_global`).
+- New `prelogin_max_sec`: absolute deadline for unauthenticated mail connections.
+- Runtime dependencies updated (`express`, `undici`, `qs`).
 
 ---
 

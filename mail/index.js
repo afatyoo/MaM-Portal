@@ -23,7 +23,7 @@ export function startMailProxy(deps) {
   }
 
   const ctx = makeContext(deps);
-  setInterval(() => { ctx.ipFail.sweep(); ctx.userFail.sweep(); }, 60_000).unref();
+  setInterval(() => ctx.limiter.sweep(), 60_000).unref();
   if (ctx.cache) process.once("exit", () => { try { ctx.cache.close(); } catch { /* ignore */ } });
 
   const tlsOpts = {
@@ -70,6 +70,8 @@ export function startMailProxy(deps) {
     handshake_timeout_sec: m.handshakeTimeoutSec,
     auth_fail_per_ip: m.authFailPerIp,
     auth_fail_per_user: m.authFailPerUser,
+    auth_fail_per_user_global: m.authFailPerUserGlobal,
+    prelogin_max_sec: m.preloginMaxSec,
     auth_fail_window_sec: m.authFailWindowSec,
     send_originating_ip: m.sendOriginatingIp,
   };
