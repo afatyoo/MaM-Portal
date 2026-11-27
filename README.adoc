@@ -8,7 +8,7 @@ A lightweight portal to authenticate users against *Zimbra / Carbonio* using *SO
 It also includes a built-in *Admin Dashboard* to manage servers, domains, and admin users.
 Since *v1.1.0* it also proxies *IMAPS / POP3S / SMTPS* for the same accounts, so a mail client only ever needs one hostname. See `docs/mail-proxy.md`.
 
-*Current version:* **1.2.1**
+*Current version:* **1.2.2**
 
 [.text-center]
 image::MaM-Portal.png[]
