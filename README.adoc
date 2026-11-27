@@ -64,6 +64,10 @@ image::MaM-Portal.png[]
 ├── config.ini
 ├── package.json
 ├── server.js
+├── lib/                  (login limits, logging, request guards)
+├── packaging/            (Debian package)
+├── deploy/               (installer, systemd unit, container)
+├── docs/
 ├── mail/
 │   ├── index.js
 │   ├── common.js
@@ -77,6 +81,7 @@ image::MaM-Portal.png[]
 │   ├── admin_users.json
 │   ├── login_attempts.jsonl
 │   ├── mail-route-cache.json
+│   ├── session-secret       (only when session_secret is not set)
 │   └── sessions/
 ├── logs/
 ├── start.sh
@@ -167,11 +172,6 @@ There is no built-in password. On the first start without any admin, the server 
 `admin` with `DEFAULT_ADMIN_PASS`, or with a random password written to
 `data/initial-admin-password`. Change it, then delete that file.
 
-=== Web access and login limits
-* The sample config binds the web to `127.0.0.1`: put a TLS reverse proxy in front, or enable `https_enabled` and clear `bind_host`
-* Behind a reverse proxy set `[WEB] trust_proxy` (`loopback` or a hop count), otherwise all users share one IP for the limits
-* Failed logins are limited per IP and per IP + account (`login_fail_per_ip`, `login_fail_per_user`, `login_fail_window_sec`)
-
 === Make script executable
 [source,bash]
 ----
@@ -249,6 +249,8 @@ TIP: Use a strong password and make sure `data/` is not committed to Git.
 default_domain = example.com
 
 [WEB]
+bind_host = 127.0.0.1
+; trust_proxy = loopback
 https_enabled = false
 http_port = 8080
 https_port = 8443
@@ -277,6 +279,13 @@ preauth_path = /service/preauth
 * `domains` must be a comma-separated list
 * You can use `*` as a wildcard fallback domain
 * `default_domain` will be appended if a user logs in with username only
+
+=== Mail proxy
+See the `[MAIL]` section of `config.sample.ini` and `docs/mail-proxy.md`. Login limits:
+
+* `auth_fail_per_ip`, `auth_fail_per_user` (counted per IP + user), `auth_fail_window_sec`
+* `auth_fail_per_user_global`: looser ceiling for one user across all addresses
+* `prelogin_max_sec`: absolute time a connection may stay unauthenticated
 
 === Carbonio compatibility
 Carbonio generally works the same as Zimbra as long as SOAP and Preauth endpoints are compatible.
@@ -313,10 +322,26 @@ Build the admin UI into `public/admin/`:
 npm run build
 ----
 
+== Security
+
+=== Web access and login limits
+* The sample config binds the web to `127.0.0.1`: put a TLS reverse proxy in front, or enable `https_enabled` and clear `bind_host`
+* Behind a reverse proxy set `[WEB] trust_proxy` (`loopback` or a hop count), otherwise all users share one IP for the limits
+* Failed logins are limited per IP and per IP + account (`login_fail_per_ip`, `login_fail_per_user`, `login_fail_window_sec`)
+
+=== Built in protections
+* Admin API changes must be same-origin JSON. A reverse proxy must pass the original `Host` header
+* Admin sessions are renewed at login and end when the account is deleted
+* Webmail handoff links work once, only in the browser that logged in
+* The preauth value is sent to the backend in the query string, so protect backend access logs
+* `/api/servers` requires an admin session
+* The login log clips long fields and rotates at 10 MB, keeping 3 old files
+* Report vulnerabilities as described in `SECURITY.md`
+
 == Production Notes
 
-* Place the portal behind a reverse proxy such as *Nginx* or *Caddy*
-* Always set a strong `session_secret` in `[ADMIN]`
+* Place the portal behind a reverse proxy such as *Nginx* or *Caddy*, or enable HTTPS
+* Set your own `session_secret` in `[ADMIN]`; with the placeholder one is generated into `data/session-secret`
 * Do not commit the following:
 ** `config.ini`
 ** `data/`
@@ -330,6 +355,7 @@ In production, it is recommended to:
 
 * Terminate HTTPS at Nginx or Caddy
 * Forward traffic to the Node.js app running on the configured HTTP port
+* Pass `Host` unchanged and set `trust_proxy`
 * Restrict admin access if necessary
 
 == Troubleshooting
